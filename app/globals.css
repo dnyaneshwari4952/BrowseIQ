@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #FFFFFF;
+  --foreground: #1F2933;
+  --card: #FFFFFF;
+  --card-foreground: #1F2933;
+  --primary: #4F8EAD;
+  --primary-foreground: #FFFFFF;
+  --secondary: #F7FAFC;
+  --secondary-foreground: #24485A;
+  --muted: #EEF6FB;
+  --muted-foreground: #667784;
+  --accent: #6FA8C5;
+  --accent-foreground: #FFFFFF;
+  --destructive: #C96B6B;
+  --destructive-foreground: #FFFFFF;
+  --border: #D9E8EF;
+  --input: #FFFFFF;
+  --ring: #6FA8C5;
+}
+
+body {
+  background-color: #F7FAFC;
+  color: #1F2933;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Subtle scrollbars styled for White + Misty Blue theme */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #F7FAFC;
+}
+::-webkit-scrollbar-thumb {
+  background: #D9E8EF;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #B4D3E3;
+}
+
+/* Clean selection */
+::selection {
+  background-color: #E3F1F8;
+  color: #24485A;
+}
