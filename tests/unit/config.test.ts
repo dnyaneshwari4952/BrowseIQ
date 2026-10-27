@@ -10,7 +10,7 @@ describe("Configuration Module", () => {
     const config = getConfig();
     expect(config).toBeDefined();
     expect(config.LLM_PROVIDER).toBe("openai");
-    expect(config.BROWSER_HEADLESS).toBe(true);
+    expect(config.BROWSER_HEADLESS).toBe(false);
     expect(config.DEFAULT_ACTION_TIMEOUT).toBe(15000);
     expect(config.MAX_ACTION_RETRIES).toBe(3);
     expect(config.MAX_REPLANS).toBe(3);

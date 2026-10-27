@@ -5,7 +5,8 @@ import { LocatorStrategy } from "./actions";
  * Adheres strictly to Section 7 (Compact, normalized page representation)
  */
 export interface ObservedElement {
-  id: string; // generated unique reference on the page
+  id?: string; // generated unique reference on the page
+  index?: number;
   role?: string;
   tagName: string;
   type?: string;
@@ -16,6 +17,8 @@ export interface ObservedElement {
   value?: string;
   href?: string;
   testId?: string;
+  ariaLabel?: string;
+  titleAttr?: string;
   isVisible: boolean;
   isEnabled: boolean;
   isChecked?: boolean;
@@ -27,11 +30,28 @@ export interface ObservedElement {
     height: number;
   };
   attributes?: Record<string, string>;
-  locatorCandidates: Array<{
+  locatorCandidates?: Array<{
     strategy: (typeof LocatorStrategy)[keyof typeof LocatorStrategy];
     value: string;
     confidence: number;
   }>;
+}
+
+export interface ObservedMediaElement {
+  id?: string;
+  tagName: "video" | "audio";
+  type?: "video" | "audio" | string;
+  src?: string;
+  currentSrc?: string;
+  isPlaying: boolean;
+  isPaused: boolean;
+  isMuted: boolean;
+  currentTime: number;
+  duration: number;
+  volume: number;
+  readyState: number;
+  ended: boolean;
+  error?: string | null;
 }
 
 /**
@@ -42,10 +62,12 @@ export interface PageObservation {
   title: string;
   headings: string[];
   interactiveElements: ObservedElement[];
+  mediaElements?: ObservedMediaElement[];
   forms: Array<{
     id?: string;
     action?: string;
     inputs: string[];
+    options?: Array<{ name?: string; value: string; text: string }>;
   }>;
   dialogs: Array<{
     type: "alert" | "confirm" | "prompt" | "modal";
@@ -54,6 +76,8 @@ export interface PageObservation {
   summary: string;
   timestamp: string;
   tabId: string;
+  pageType?: "normal" | "search_results" | "empty" | "challenge" | "consent" | "error" | "transitional";
+  isSettled?: boolean;
 }
 
 /**

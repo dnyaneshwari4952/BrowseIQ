@@ -7,8 +7,10 @@ export interface ApiEndpointDefinition {
   endpoint: string;
   method: "GET" | "POST";
   patterns: RegExp[];
+  capabilities?: string[];
   browserFallbackUrl: string;
   extractParameters: (taskText: string) => Record<string, string>;
+  responseSchema?: z.ZodTypeAny;
 }
 
 export class ApiRegistry {
@@ -23,7 +25,8 @@ export class ApiRegistry {
         /\b(?:external|remote|public|dummyjson|live|rest)\b.*\b(?:api|endpoint|catalog|products?)\b/i,
         /\b(?:query|call|fetch)\b.*\b(?:dummyjson|external api)\b/i,
       ],
-      browserFallbackUrl: "/test-fixtures/search",
+      capabilities: ["search", "catalog", "products", "prices"],
+      browserFallbackUrl: "http://localhost:3000/test-fixtures/search",
       extractParameters: (taskText: string) => {
         const queryMatch =
           taskText.match(/['"]([^'"]+)['"]/i) ||
@@ -33,6 +36,9 @@ export class ApiRegistry {
           q: queryMatch ? queryMatch[1].trim() : "laptop",
         };
       },
+      responseSchema: z.object({
+        products: z.array(z.record(z.unknown())),
+      }),
     },
     {
       id: "products-api",
@@ -44,7 +50,8 @@ export class ApiRegistry {
         /\b(?:search|find|get|query|look up)\b.*\b(?:product|laptop|computer|mouse|keyboard|item|price)\b/i,
         /\b(?:products?|laptops?)\s+(?:catalog|api|list)\b/i,
       ],
-      browserFallbackUrl: "/test-fixtures/search",
+      capabilities: ["search", "catalog", "products", "prices"],
+      browserFallbackUrl: "http://localhost:3000/test-fixtures/search",
       extractParameters: (taskText: string) => {
         const queryMatch =
           taskText.match(/['"]([^'"]+)['"]/i) ||
@@ -54,6 +61,9 @@ export class ApiRegistry {
           q: queryMatch ? queryMatch[1].trim() : "laptop",
         };
       },
+      responseSchema: z.object({
+        products: z.array(z.record(z.unknown())),
+      }),
     },
     {
       id: "invoice-download-api",
@@ -62,6 +72,7 @@ export class ApiRegistry {
       endpoint: "/api/test-fixtures/download-file",
       method: "GET",
       patterns: [/\b(?:download|fetch)\b.*\b(?:invoice|pdf|receipt|document)\b/i],
+      capabilities: ["download", "invoice", "receipt"],
       browserFallbackUrl: "/test-fixtures/download",
       extractParameters: () => ({}),
     },
@@ -84,6 +95,10 @@ export class ApiRegistry {
 
   static getById(id: string): ApiEndpointDefinition | undefined {
     return this.endpoints.find((ep) => ep.id === id);
+  }
+
+  static get(id: string): ApiEndpointDefinition | undefined {
+    return this.getById(id);
   }
 }
 

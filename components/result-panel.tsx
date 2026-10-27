@@ -1,23 +1,51 @@
 "use client";
 
 import React, { useState } from "react";
-import { CheckCircle2, Download, Image as ImageIcon, Copy, Check, ExternalLink, HelpCircle, AlertTriangle, Clock } from "lucide-react";
-import { DownloadedArtifact } from "@/lib/types/results";
+import {
+  CheckCircle2,
+  Download,
+  Copy,
+  Check,
+  ExternalLink,
+  HelpCircle,
+  AlertTriangle,
+  AlertCircle,
+  Clock,
+  ShieldAlert,
+  XCircle,
+  FileText,
+  CheckSquare,
+  Sparkles,
+} from "lucide-react";
+import { DownloadedArtifact, TaskVerificationResult, RecoveryAttemptRecord } from "@/lib/types/results";
+import { redactSecrets } from "@/lib/observability/trace";
+import { ModeBadge } from "@/components/mode-switch";
+import type { PlanningMetadata } from "@/lib/agent/gemini-planning-interface";
 
-interface ResultPanelProps {
+export interface ResultPanelProps {
   status?:
     | "completed"
+    | "partial_success"
     | "failed"
     | "cancelled"
     | "timed_out"
     | "needs_clarification"
     | "unsupported_task"
-    | "waiting_for_user";
+    | "waiting_for_user"
+    | "blocked";
   statusMessage?: string;
   extractedData?: unknown;
   downloads?: DownloadedArtifact[];
   screenshots?: string[];
   sourceUrl?: string;
+  taskVerification?: TaskVerificationResult | null;
+  executionMode?: "live" | "test";
+  interpretedTask?: string;
+  constraints?: string[];
+  recoveryHistory?: RecoveryAttemptRecord[];
+  taskId?: string;
+  /** Planning metadata from the task execution context for observability. */
+  planningMetadata?: PlanningMetadata;
 }
 
 export function ResultPanel({
@@ -25,20 +53,31 @@ export function ResultPanel({
   statusMessage,
   extractedData,
   downloads = [],
-  screenshots = [],
   sourceUrl,
+  taskVerification,
+  executionMode = "live",
+  interpretedTask,
+  constraints = [],
+  recoveryHistory = [],
+  taskId,
+  planningMetadata,
 }: ResultPanelProps) {
   const [copied, setCopied] = useState(false);
+  const [reportCopied, setReportCopied] = useState(false);
   const [viewDetails, setViewDetails] = useState(false);
+  const [viewAuditReport, setViewAuditReport] = useState(false);
 
-  if (!status && !extractedData && downloads.length === 0 && screenshots.length === 0) {
+  if (!status && !extractedData && downloads.length === 0 && !taskVerification) {
     return null; // Keep clean until results exist
   }
 
   const isCompleted = status === "completed";
+  const isPartial = status === "partial_success";
   const isClarification = status === "needs_clarification" || status === "waiting_for_user";
   const isUnsupported = status === "unsupported_task";
   const isTimedOut = status === "timed_out";
+  const isBlocked = status === "blocked";
+  const isCancelled = status === "cancelled";
 
   // Check if extracted data has recognizable fields (e.g. title, price, name, etc.)
   let primaryTitle: string | null = null;
@@ -74,15 +113,48 @@ export function ResultPanel({
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleCopySanitizedReport = () => {
+    const report = {
+      reportType: "Sanitized Task Execution Audit",
+      taskId: taskId || "task-latest",
+      executionMode,
+      finalStatus: status || "unknown",
+      statusMessage: statusMessage || "",
+      interpretedTask: interpretedTask || undefined,
+      constraintsPreserved: constraints.length > 0 ? constraints : undefined,
+      verificationOutcome: taskVerification?.outcome || status,
+      verificationEvidence: {
+        passed: taskVerification?.passed ?? isCompleted,
+        reason: taskVerification?.reason || statusMessage,
+        conditionsPassed: taskVerification?.evidence?.conditionsPassed || [],
+        failedChecks: taskVerification?.failedChecks || [],
+        missingOutputs: taskVerification?.missingOutputs || [],
+      },
+      recoveryAttempts: recoveryHistory.length,
+      downloadCount: downloads.length,
+      timestamp: new Date().toISOString(),
+    };
+
+    const sanitized = redactSecrets(report);
+    navigator.clipboard.writeText(JSON.stringify(sanitized, null, 2));
+    setReportCopied(true);
+    setTimeout(() => setReportCopied(false), 2000);
+  };
+
   return (
     <div className="bg-[#FFFFFF] border border-[#D9E8EF] rounded-xl p-5 shadow-card space-y-4">
-      {/* Result Status Banner (Part 27) */}
+      {/* Result Status Banner (Section 10 Observability) */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#D9E8EF] pb-3">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {isCompleted ? (
             <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-[#5F9E7A] bg-[#EEF6FB] px-2.5 py-1 rounded-md border border-[#D9E8EF]">
               <CheckCircle2 className="w-3.5 h-3.5 text-[#5F9E7A]" />
-              Task Completed
+              Task Verified Successfully
+            </span>
+          ) : isPartial ? (
+            <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-[#B45309] bg-[#FEF3C7] px-2.5 py-1 rounded-md border border-[#FDE68A]">
+              <AlertCircle className="w-3.5 h-3.5 text-[#B45309]" />
+              Partial Success (Unmet requirements)
             </span>
           ) : isClarification ? (
             <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-[#B45309] bg-[#FEF3C7] px-2.5 py-1 rounded-md border border-[#FDE68A]">
@@ -99,18 +171,49 @@ export function ResultPanel({
               <Clock className="w-3.5 h-3.5 text-[#C2410C]" />
               Timed Out
             </span>
+          ) : isBlocked ? (
+            <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-[#DC2626] bg-[#FEF2F2] px-2.5 py-1 rounded-md border border-[#FEE2E2]">
+              <ShieldAlert className="w-3.5 h-3.5 text-[#DC2626]" />
+              Access Restricted / Blocked
+            </span>
+          ) : isCancelled ? (
+            <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-[#4B5563] bg-[#F3F4F6] px-2.5 py-1 rounded-md border border-[#E5E7EB]">
+              <XCircle className="w-3.5 h-3.5 text-[#4B5563]" />
+              Task Cancelled by User
+            </span>
           ) : (
-            <span className="text-xs font-semibold uppercase tracking-wider text-[#C96B6B] bg-[#FDF2F2] px-2.5 py-1 rounded-md border border-[#F5D5D5]">
-              {status || "Failed"}
+            <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-[#C96B6B] bg-[#FDF2F2] px-2.5 py-1 rounded-md border border-[#F5D5D5]">
+              <AlertCircle className="w-3.5 h-3.5 text-[#C96B6B]" />
+              {status || "Verification Failed"}
             </span>
           )}
-        </div>
 
+          {/* Execution environment badge (Enforced Live Execution) */}
+          <span className="text-[10px] font-mono px-2 py-0.5 rounded font-medium bg-[#F7FAFC] text-[#667784] border border-[#D9E8EF] flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#5F9E7A]"></span>
+            Live Browser
+          </span>
+
+          {/* Planning mode badge: shows whether Gemini was actually used for this task */}
+          <ModeBadge
+            operatingMode={planningMetadata?.operatingMode}
+            geminiInvoked={planningMetadata?.geminiInvoked}
+          />
+        </div>
 
         <div className="flex items-center gap-2">
           <button
+            onClick={handleCopySanitizedReport}
+            className="px-2.5 py-1.5 bg-[#FFFFFF] hover:bg-[#F0F7FA] text-[#24485A] border border-[#D9E8EF] rounded-lg text-xs font-medium flex items-center gap-1 transition-colors shadow-sm"
+            title="Copy audit-safe sanitized execution report (strips all secrets and cookies)"
+          >
+            {reportCopied ? <Check className="w-3.5 h-3.5 text-[#5F9E7A]" /> : <FileText className="w-3.5 h-3.5 text-[#4F8EAD]" />}
+            <span>{reportCopied ? "Report Copied" : "Sanitized Audit"}</span>
+          </button>
+
+          <button
             onClick={handleCopy}
-            className="px-3 py-1.5 bg-[#FFFFFF] hover:bg-[#F0F7FA] text-[#24485A] border border-[#D9E8EF] rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors shadow-sm"
+            className="px-2.5 py-1.5 bg-[#FFFFFF] hover:bg-[#F0F7FA] text-[#24485A] border border-[#D9E8EF] rounded-lg text-xs font-medium flex items-center gap-1 transition-colors shadow-sm"
           >
             {copied ? <Check className="w-3.5 h-3.5 text-[#5F9E7A]" /> : <Copy className="w-3.5 h-3.5 text-[#4F8EAD]" />}
             <span>{copied ? "Copied" : "Copy Result"}</span>
@@ -118,14 +221,100 @@ export function ResultPanel({
 
           <button
             onClick={() => setViewDetails(!viewDetails)}
-            className="px-3 py-1.5 bg-[#EEF6FB] hover:bg-[#E3F1F8] text-[#24485A] border border-[#D9E8EF] rounded-lg text-xs font-medium transition-colors"
+            className="px-2.5 py-1.5 bg-[#EEF6FB] hover:bg-[#E3F1F8] text-[#24485A] border border-[#D9E8EF] rounded-lg text-xs font-medium transition-colors"
           >
-            {viewDetails ? "Hide Raw Data" : "View Raw Data"}
+            {viewDetails ? "Hide Data" : "Raw Data"}
           </button>
         </div>
       </div>
 
-      {/* Prominent Result Focus (Part 27: Laptop Pro, ₹75,000, Source) */}
+      {/* Interpreted Task & Constraints Card (Section 4 & 10) */}
+      {(interpretedTask || constraints.length > 0) && (
+        <div className="bg-[#F7FAFC] border border-[#D9E8EF] rounded-lg p-3 space-y-1.5 text-xs">
+          {interpretedTask && (
+            <div className="flex items-baseline gap-2">
+              <span className="text-[11px] font-semibold text-[#667784] uppercase tracking-wider shrink-0">Interpreted Goal:</span>
+              <span className="text-[#24485A] font-medium">{interpretedTask}</span>
+            </div>
+          )}
+          {constraints.length > 0 && (
+            <div className="flex items-baseline gap-2 flex-wrap pt-0.5">
+              <span className="text-[11px] font-semibold text-[#667784] uppercase tracking-wider shrink-0">Active Constraints:</span>
+              <div className="flex flex-wrap gap-1">
+                {constraints.map((c, i) => (
+                  <span key={i} className="bg-[#FFFFFF] border border-[#D9E8EF] text-[#4F8EAD] px-2 py-0.5 rounded text-[10px] font-mono font-medium">
+                    {c}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Verification Evidence & Criteria (Section 2, 3, 10) */}
+      {taskVerification && (
+        <div className="bg-[#FFFFFF] border border-[#D9E8EF] rounded-lg p-3.5 space-y-2.5 text-xs">
+          <div className="flex items-center justify-between border-b border-[#D9E8EF] pb-2">
+            <span className="font-semibold text-[#24485A] flex items-center gap-1.5">
+              <CheckSquare className="w-4 h-4 text-[#4F8EAD]" />
+              Independent Verification Evidence
+            </span>
+            <span className={`text-[11px] font-semibold ${taskVerification.passed ? "text-[#5F9E7A]" : "text-[#C96B6B]"}`}>
+              {taskVerification.passed ? "Ground Truth Verified" : "Verification Inconclusive / Failed"}
+            </span>
+          </div>
+
+          {taskVerification.reason && (
+            <p className="text-[#1F2933] leading-relaxed font-medium">
+              {taskVerification.reason}
+            </p>
+          )}
+
+          {/* Conditions passed */}
+          {taskVerification.evidence?.conditionsPassed && taskVerification.evidence.conditionsPassed.length > 0 && (
+            <div className="space-y-1 pt-1">
+              <div className="text-[11px] font-semibold text-[#5F9E7A] uppercase tracking-wider">Criteria Met:</div>
+              <div className="flex flex-wrap gap-1.5">
+                {taskVerification.evidence.conditionsPassed.map((cond, i) => (
+                  <span key={i} className="inline-flex items-center gap-1 bg-[#EEF6FB] text-[#5F9E7A] border border-[#D9E8EF] px-2 py-0.5 rounded text-[11px] font-medium">
+                    <Check className="w-3 h-3" /> {cond}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Unmet requirements / failed checks */}
+          {((taskVerification.failedChecks && taskVerification.failedChecks.length > 0) ||
+            (taskVerification.missingOutputs && taskVerification.missingOutputs.length > 0)) && (
+            <div className="space-y-1 pt-1">
+              <div className="text-[11px] font-semibold text-[#C96B6B] uppercase tracking-wider">Unmet Requirements:</div>
+              <div className="flex flex-wrap gap-1.5">
+                {taskVerification.failedChecks?.map((check, i) => (
+                  <span key={`f-${i}`} className="inline-flex items-center gap-1 bg-[#FDF2F2] text-[#C96B6B] border border-[#F5D5D5] px-2 py-0.5 rounded text-[11px] font-medium">
+                    <AlertCircle className="w-3 h-3" /> {check}
+                  </span>
+                ))}
+                {taskVerification.missingOutputs?.map((out, i) => (
+                  <span key={`m-${i}`} className="inline-flex items-center gap-1 bg-[#FEF3C7] text-[#B45309] border border-[#FDE68A] px-2 py-0.5 rounded text-[11px] font-medium">
+                    <AlertTriangle className="w-3 h-3" /> Missing: {out}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Recovery attempts note */}
+          {recoveryHistory.length > 0 && (
+            <div className="text-[11px] text-[#667784] pt-1 border-t border-[#D9E8EF]">
+              <span>Recovery executed {recoveryHistory.length} times without losing original user constraints.</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Prominent Result Focus */}
       {primaryTitle && (
         <div className="bg-[#F7FAFC] border border-[#D9E8EF] rounded-xl p-4.5 space-y-2">
           <div className="flex flex-col sm:flex-row sm:items-baseline justify-between gap-2">
@@ -154,14 +343,16 @@ export function ResultPanel({
             </div>
           )}
 
-          <div className="flex items-center gap-1 text-xs text-[#5F9E7A] font-medium pt-1">
-            <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-            <span>Task verified successfully</span>
-          </div>
+          {isCompleted && (
+            <div className="flex items-center gap-1 text-xs text-[#5F9E7A] font-medium pt-1">
+              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+              <span>Evidence confirms task goal achieved</span>
+            </div>
+          )}
         </div>
       )}
 
-      {/* Clarification prompt card (Phase 10 & 36) */}
+      {/* Clarification prompt card */}
       {isClarification && Boolean(statusMessage) && (
         <div className="p-4 bg-[#FEF3C7]/40 border border-[#FDE68A] rounded-xl space-y-2">
           <div className="flex items-center gap-2 text-xs font-bold text-[#B45309]">
@@ -172,7 +363,7 @@ export function ResultPanel({
             {statusMessage}
           </p>
           <div className="text-[11px] text-[#92400E] pt-1 border-t border-[#FDE68A]/60 flex items-center gap-1">
-            <span>Tip: Re-run the task with more specific details or provide the correct target page URL.</span>
+            <span>Tip: Provide specific details or target URL to proceed safely.</span>
           </div>
         </div>
       )}
@@ -183,7 +374,6 @@ export function ResultPanel({
           {statusMessage}
         </div>
       )}
-
 
       {/* Downloaded Files if available */}
       {downloads.length > 0 && (

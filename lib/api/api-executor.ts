@@ -8,6 +8,7 @@ export const ApiErrorCode = {
   INVALID_RESPONSE: "INVALID_RESPONSE",
   NOT_FOUND: "NOT_FOUND",
   SERVER_ERROR: "SERVER_ERROR",
+  TIMEOUT: "TIMEOUT",
   UNKNOWN_API_ERROR: "UNKNOWN_API_ERROR",
 } as const;
 
@@ -37,8 +38,25 @@ export class ApiExecutor {
     if (status === 429) return ApiErrorCode.RATE_LIMIT;
     if (status === 404) return ApiErrorCode.NOT_FOUND;
     if (status >= 500) return ApiErrorCode.SERVER_ERROR;
-    if (message.toLowerCase().includes("network") || message.toLowerCase().includes("fetch failed")) {
+    const lower = message.toLowerCase();
+    if (
+      lower.includes("network") ||
+      lower.includes("fetch failed") ||
+      lower.includes("failed to fetch") ||
+      lower.includes("enotfound") ||
+      lower.includes("econnrefused") ||
+      lower.includes("dns")
+    ) {
       return ApiErrorCode.NETWORK_ERROR;
+    }
+    if (
+      lower.includes("timeout") ||
+      lower.includes("timed out") ||
+      lower.includes("abort") ||
+      lower.includes("canceled") ||
+      lower.includes("cancelled")
+    ) {
+      return ApiErrorCode.TIMEOUT;
     }
     if (message.toLowerCase().includes("json") || message.toLowerCase().includes("parse")) {
       return ApiErrorCode.INVALID_RESPONSE;
@@ -52,7 +70,8 @@ export class ApiExecutor {
   static async execute(
     endpoint: ApiEndpointDefinition,
     taskText: string,
-    baseUrl = "http://localhost:3000"
+    baseUrl = "http://localhost:3000",
+    signal?: AbortSignal
   ): Promise<ApiExecutionResult> {
     const startTime = Date.now();
     const params = endpoint.extractParameters(taskText);
@@ -68,6 +87,12 @@ export class ApiExecutor {
         targetUrl += `?${queryParams.toString()}`;
       }
 
+      const timeoutSignal = AbortSignal.timeout(5000);
+      const combinedSignal =
+        typeof AbortSignal.any === "function" && signal
+          ? AbortSignal.any([timeoutSignal, signal])
+          : (signal || timeoutSignal);
+
       const res = await fetch(targetUrl, {
         method: endpoint.method,
         headers: {
@@ -75,7 +100,7 @@ export class ApiExecutor {
           "Content-Type": "application/json",
         },
         body: endpoint.method === "POST" ? JSON.stringify(params) : undefined,
-        signal: AbortSignal.timeout(5000),
+        signal: combinedSignal,
       });
 
       const durationMs = Date.now() - startTime;
@@ -113,6 +138,25 @@ export class ApiExecutor {
         data = { raw: text };
       }
 
+      // Validate response against endpoint schema if specified
+      if (endpoint.responseSchema) {
+        const schemaCheck = endpoint.responseSchema.safeParse(data);
+        if (!schemaCheck.success) {
+          return {
+            success: false,
+            endpointId: endpoint.id,
+            statusCode: res.status,
+            error: {
+              code: ApiErrorCode.INVALID_RESPONSE,
+              message: `API response schema validation failed: ${JSON.stringify(schemaCheck.error.format())}`,
+            },
+            fallbackToBrowser: true,
+            fallbackUrl: endpoint.browserFallbackUrl,
+            durationMs,
+          };
+        }
+      }
+
       return {
         success: true,
         endpointId: endpoint.id,
@@ -126,6 +170,9 @@ export class ApiExecutor {
       const message = err instanceof Error ? err.message : String(err);
       const errorCode = this.classifyError(0, message);
 
+      // Do not fall back from an unauthorized or denied request to browser to evade denial
+      const fallbackAllowed = errorCode !== ApiErrorCode.AUTH_ERROR;
+
       return {
         success: false,
         endpointId: endpoint.id,
@@ -133,8 +180,8 @@ export class ApiExecutor {
           code: errorCode,
           message: `Network or runtime error during API call: ${message}`,
         },
-        fallbackToBrowser: true,
-        fallbackUrl: endpoint.browserFallbackUrl,
+        fallbackToBrowser: fallbackAllowed,
+        fallbackUrl: fallbackAllowed ? endpoint.browserFallbackUrl : undefined,
         durationMs,
       };
     }

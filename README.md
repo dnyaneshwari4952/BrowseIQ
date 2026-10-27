@@ -157,7 +157,7 @@ cp .env.example .env
 | `LLM_PROVIDER` | LLM backend (`openai`, `gemini`, `mock`) | `openai` |
 | `LLM_API_KEY` | Provider API key | (Optional for Mock) |
 | `LLM_MODEL` | Provider model name | `gpt-4o-mini` |
-| `BROWSER_HEADLESS` | Run Chromium headless | `true` |
+| `BROWSER_HEADLESS` | Visible browser window execution | `false` |
 | `DEFAULT_ACTION_TIMEOUT`| Max timeout per action (ms) | `15000` |
 | `MAX_ACTION_RETRIES` | Retries per failed locator | `3` |
 | `MAX_REPLANS` | Maximum plan revisions | `3` |

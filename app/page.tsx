@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
-import { Bot, Sliders, ShieldCheck, Activity, Terminal, ChevronDown, ChevronUp, Layers, Compass, Zap } from "lucide-react";
+import React, { useState, useEffect, useRef, useReducer, useCallback } from "react";
+import { Bot, Sliders, ShieldCheck, Activity, Terminal, ChevronDown, ChevronUp, Layers, Compass, Zap, AlertTriangle } from "lucide-react";
 import { TaskInput } from "@/components/task-input";
 import { ExecutionPanel } from "@/components/execution-panel";
 import { PlanViewer } from "@/components/plan-viewer";
@@ -9,52 +9,140 @@ import { BrowserState } from "@/components/browser-state";
 import { ActionLog } from "@/components/action-log";
 import { ResultPanel } from "@/components/result-panel";
 import { ErrorPanel } from "@/components/error-panel";
-import { SettingsPanel } from "@/components/settings-panel";
-import { AgentState, Plan } from "@/lib/types/plans";
-import { PageObservation } from "@/lib/types/browser";
+import { SettingsPanel, AgentSettings } from "@/components/settings-panel";
+import { AgentState } from "@/lib/types/plans";
 import { ExecutionEvent } from "@/lib/observability/trace";
-import { DownloadedArtifact, ExecutionContext } from "@/lib/types/results";
+import { ExecutionContext } from "@/lib/types/results";
+import {
+  taskSessionReducer,
+  INITIAL_TASK_SESSION_STATE,
+  hasSessionData,
+} from "@/lib/state/task-session";
 
 export default function DashboardPage() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
-  const [advancedTab, setAdvancedTab] = useState<"plan" | "page" | "trace" | "diagnostics">("plan");
   const [systemHealthy, setSystemHealthy] = useState<boolean | null>(null);
 
-  // Agent State
-  const [agentState, setAgentState] = useState<AgentState>(AgentState.IDLE);
-  const [currentUrl, setCurrentUrl] = useState<string | undefined>();
-  const [currentPageTitle, setCurrentPageTitle] = useState<string | undefined>();
-  const [currentActionName, setCurrentActionName] = useState<string | undefined>();
-  const [startTime, setStartTime] = useState<string | undefined>();
-  const [currentStepIndex, setCurrentStepIndex] = useState(0);
+  // Settings State (Persistent user configuration — NOT cleared by task reset)
+  const [settings, setSettings] = useState<AgentSettings>({
+    actionTimeout: 15000,
+    maxRetries: 3,
+    maxReplans: 3,
+    requireConfirmation: true,
+    localFilesEnabled: false,
+    approvedDirectory: "",
+  });
 
-  // Structured Plan & Observation
-  const [plan, setPlan] = useState<Plan | null>(null);
-  const [observation, setObservation] = useState<PageObservation | null>(null);
-  const [events, setEvents] = useState<ExecutionEvent[]>([]);
+  // Centralized Task Session State
+  const [session, dispatch] = useReducer(taskSessionReducer, INITIAL_TASK_SESSION_STATE);
 
-  // Results & Errors
-  const [extractedData, setExtractedData] = useState<unknown>(null);
-  const [downloads, setDownloads] = useState<DownloadedArtifact[]>([]);
-  const [screenshots, setScreenshots] = useState<string[]>([]);
-  const [finalStatus, setFinalStatus] = useState<ExecutionContext["finalStatus"]>();
-  const [statusMessage, setStatusMessage] = useState<string | undefined>();
-  const [errorDetails, setErrorDetails] = useState<{ code: string; message: string; stepId?: string } | null>(null);
-  const [waitingForUser, setWaitingForUser] = useState(false);
-  const [retriesCount, setRetriesCount] = useState(0);
-  const [replansCount, setReplansCount] = useState(0);
-
+  // Session / run invalidation token and network abort controller
+  const currentRunIdRef = useRef<number>(0);
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  // Initial health check
+  const executionMode = "live" as const;
+
+  // Migrate legacy operating mode preference safely from localStorage
+  useEffect(() => {
+    try {
+      localStorage.removeItem("baa_operating_mode");
+      localStorage.removeItem("operatingMode");
+    } catch {
+      // localStorage unavailable (SSR or private browsing)
+    }
+  }, []);
+
+  const [engineHealthText, setEngineHealthText] = useState<string>("Connecting...");
+  const [providerInfo, setProviderInfo] = useState<{ provider: string; isLive: boolean } | null>(null);
+  const [displayLimitation, setDisplayLimitation] = useState<string | null>(null);
+  const [verifiedBrowserState, setVerifiedBrowserState] = useState<{
+    isLaunched: boolean;
+    openWindows: number;
+    activeSessions: number;
+    displayAvailable: boolean;
+    displayType: string;
+  } | null>(null);
+
+  // Initial health check distinguishing process, browser, and provider configuration
   useEffect(() => {
     fetch("/api/health")
       .then((res) => res.json())
       .then((data) => {
-        setSystemHealthy(data.status === "healthy");
+        const isHealthy = data.status === "healthy";
+        setSystemHealthy(isHealthy);
+        const prov = data.system?.llmProvider || data.components?.primaryProvider?.name || "gemini";
+        setProviderInfo({
+          provider: prov.charAt(0).toUpperCase() + prov.slice(1),
+          isLive: prov !== "mock",
+        });
+        const limitation = data.components?.browser?.displayLimitation || null;
+        setDisplayLimitation(limitation);
+
+        if (data.components?.browser) {
+          setVerifiedBrowserState({
+            isLaunched: Boolean(data.components.browser.isLaunched),
+            openWindows: Number(data.components.browser.openWindows || 0),
+            activeSessions: Number(data.components.browser.activeSessions || 0),
+            displayAvailable: Boolean(data.components.browser.displayAvailable),
+            displayType: String(data.components.browser.displayType || "unknown"),
+          });
+        }
+
+        if (isHealthy) {
+          setEngineHealthText("Engine Online");
+        } else if (data.status === "degraded") {
+          const providerStatus = data.components?.primaryProvider?.status;
+          if (data.system?.displayAvailable === false || limitation) {
+            setEngineHealthText("Degraded: No Graphical Display");
+          } else if (providerStatus === "missing_credentials") {
+            setEngineHealthText("Degraded: Missing API Key");
+          } else {
+            setEngineHealthText("Degraded: Config Warning");
+          }
+        } else {
+          setEngineHealthText("Offline");
+        }
       })
-      .catch(() => setSystemHealthy(false));
+      .catch(() => {
+        setSystemHealthy(false);
+        setEngineHealthText("Offline");
+      });
+
+    // Load initial Local File permission status
+    fetch("/api/local-file/permission")
+      .then((res) => res.json())
+      .then((perm) => {
+        if (perm) {
+          setSettings((prev) => ({
+            ...prev,
+            localFilesEnabled: Boolean(perm.enabled),
+            accessMode: perm.accessMode || "selected_folders",
+            wholeComputerConfirmed: Boolean(perm.wholeComputerConfirmed),
+            approvedDirectories: perm.approvedDirectories || (perm.defaultDirectory ? [perm.defaultDirectory] : []),
+            approvedDirectory: perm.approvedDirectory || perm.defaultDirectory || "",
+          }));
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  /**
+   * Centralized Task Session Reset
+   * Safely cancels any active in-flight execution and resets ALL task session state
+   * to initial idle state, without modifying user preferences, API keys, or browser engine.
+   */
+  const resetTaskSession = useCallback(() => {
+    // 1. Invalidate current run generation so late or asynchronous updates are dropped
+    currentRunIdRef.current++;
+
+    // 2. Abort running fetch/stream connection
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+
+    // 3. Atomically reset all task session state variables
+    dispatch({ type: "RESET_SESSION" });
   }, []);
 
   const handleRunTask = async (task: string, targetUrl?: string) => {
@@ -65,33 +153,13 @@ export default function DashboardPage() {
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
 
+    const runId = ++currentRunIdRef.current;
     const now = new Date().toISOString();
-    setAgentState(AgentState.UNDERSTANDING);
-    setStartTime(now);
-    setCurrentUrl(targetUrl);
-    setCurrentPageTitle(undefined);
-    setCurrentActionName("Understanding task...");
-    setCurrentStepIndex(0);
-    setPlan(null);
-    setObservation(null);
-    setExtractedData(null);
-    setDownloads([]);
-    setScreenshots([]);
-    setFinalStatus(undefined);
-    setStatusMessage(undefined);
-    setErrorDetails(null);
-    setWaitingForUser(false);
-    setRetriesCount(0);
-    setReplansCount(0);
-    setEvents([
-      {
-        id: `evt-${Date.now()}-init`,
-        taskId: `task-${Date.now()}`,
-        type: "TASK_RECEIVED",
-        timestamp: now,
-        message: `Task received: "${task}"`,
-      },
-    ]);
+
+    dispatch({
+      type: "START_TASK",
+      payload: { task, targetUrl, now },
+    });
 
     try {
       const response = await fetch("/api/agent", {
@@ -100,9 +168,11 @@ export default function DashboardPage() {
           "Content-Type": "application/json",
           Accept: "text/event-stream",
         },
-        body: JSON.stringify({ task, targetUrl }),
+        body: JSON.stringify({ task, targetUrl, settings, mode: "live" }),
         signal: abortController.signal,
       });
+
+      if (currentRunIdRef.current !== runId) return;
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -114,16 +184,28 @@ export default function DashboardPage() {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
+        let hasReceivedResult = false;
 
         while (true) {
+          if (currentRunIdRef.current !== runId) {
+            reader.cancel().catch(() => {});
+            return;
+          }
+
           const { done, value } = await reader.read();
           if (done) break;
+
+          if (currentRunIdRef.current !== runId) {
+            reader.cancel().catch(() => {});
+            return;
+          }
 
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split("\n\n");
           buffer = lines.pop() || "";
 
           for (const chunk of lines) {
+            if (currentRunIdRef.current !== runId) return;
             const trimmed = chunk.trim();
             if (!trimmed) continue;
 
@@ -134,43 +216,38 @@ export default function DashboardPage() {
               const eventType = eventMatch[1];
               try {
                 const data = JSON.parse(dataMatch[1]);
+                if (currentRunIdRef.current !== runId) return;
 
                 if (eventType === "event") {
+                  if (hasReceivedResult) continue; // Ignore late events after final result
                   const ev = data as ExecutionEvent;
-                  setEvents((prev) => [...prev, ev]);
+                  dispatch({ type: "APPEND_EVENT", payload: ev });
 
                   if (ev.type === "PLAN_READY" && ev.data && (ev.data as any).plan) {
-                    setPlan((ev.data as any).plan);
+                    dispatch({ type: "SET_PLAN", payload: (ev.data as any).plan });
                   }
-                } else if (eventType === "state") {
-                  if (data.state) setAgentState(data.state);
-                  if (typeof data.stepIndex === "number") setCurrentStepIndex(data.stepIndex);
-                  if (data.actionName) setCurrentActionName(data.actionName);
-                } else if (eventType === "result") {
-                  const ctx = data as ExecutionContext;
-                  if (ctx.plan) setPlan(ctx.plan);
-                  if (ctx.extractedData) setExtractedData(ctx.extractedData);
-                  if (ctx.downloads) setDownloads(ctx.downloads);
-                  if (ctx.currentUrl) setCurrentUrl(ctx.currentUrl);
-                  if (ctx.currentPageTitle) setCurrentPageTitle(ctx.currentPageTitle);
-                  setRetriesCount(ctx.retries || 0);
-                  setReplansCount(ctx.replans || 0);
-                  setFinalStatus(ctx.finalStatus);
-                  setStatusMessage(ctx.statusMessage);
-                  setAgentState(ctx.state);
-                  setCurrentActionName(undefined);
-
-                  if (ctx.finalStatus === "failed") {
-                    setErrorDetails({
-                      code: ctx.taskVerification ? "TASK_VERIFICATION_FAILED" : "EXECUTION_FAILED",
-                      message: ctx.statusMessage || "The requested task could not be completed.",
+                  if (ev.type === "BROWSER_LAUNCHED" && ev.data) {
+                    dispatch({
+                      type: "SET_BROWSER_WINDOW",
+                      payload: {
+                        taskId: (ev.data as any).taskId,
+                        isVisible: true,
+                        isOpen: true,
+                      },
                     });
                   }
+                  if (ev.data && (ev.data as any).observation) {
+                    dispatch({ type: "SET_OBSERVATION", payload: (ev.data as any).observation });
+                  }
+                } else if (eventType === "state" || eventType === "lifecycle") {
+                  if (hasReceivedResult) continue; // Ignore late state transitions after final result
+                  dispatch({ type: "UPDATE_STATE", payload: data });
+                } else if (eventType === "result") {
+                  hasReceivedResult = true;
+                  dispatch({ type: "SET_RESULT", payload: data as ExecutionContext });
                 } else if (eventType === "error") {
-                  setAgentState(AgentState.FAILED);
-                  setFinalStatus("failed");
-                  setStatusMessage(data.message);
-                  setErrorDetails({ code: "AGENT_ERROR", message: data.message });
+                  hasReceivedResult = true;
+                  dispatch({ type: "SET_ERROR", payload: { message: data.message } });
                 }
               } catch {
                 // Ignore parse errors on partial stream chunks
@@ -178,31 +255,45 @@ export default function DashboardPage() {
             }
           }
         }
+
+        if (currentRunIdRef.current !== runId) return;
+
+        // If stream closed unexpectedly before sending a terminal result event
+        if (!hasReceivedResult && !abortController.signal.aborted) {
+          dispatch({
+            type: "SET_ERROR",
+            payload: {
+              code: "STREAM_DISCONNECTED",
+              message: "Server connection closed prematurely.",
+            },
+          });
+        }
       } else {
         // Fallback synchronous JSON
         const ctx: ExecutionContext = await response.json();
-        if (ctx.plan) setPlan(ctx.plan);
-        if (ctx.extractedData) setExtractedData(ctx.extractedData);
-        if (ctx.downloads) setDownloads(ctx.downloads);
-        if (ctx.currentUrl) setCurrentUrl(ctx.currentUrl);
-        if (ctx.currentPageTitle) setCurrentPageTitle(ctx.currentPageTitle);
-        setFinalStatus(ctx.finalStatus);
-        setStatusMessage(ctx.statusMessage);
-        setAgentState(ctx.state);
-        setCurrentActionName(undefined);
+        if (currentRunIdRef.current !== runId) return;
+        dispatch({ type: "SET_RESULT", payload: ctx });
       }
     } catch (err: unknown) {
+      if (currentRunIdRef.current !== runId) {
+        return; // Session cleared or re-run started; ignore stale errors
+      }
       if (abortController.signal.aborted) {
-        setAgentState(AgentState.CANCELLED);
-        setFinalStatus("cancelled");
-        setStatusMessage("Task stopped by user.");
+        dispatch({
+          type: "STOP_TASK",
+          payload: { message: "Task stopped by user." },
+        });
         return;
       }
       const message = err instanceof Error ? err.message : String(err);
-      setAgentState(AgentState.FAILED);
-      setFinalStatus("failed");
-      setStatusMessage(`Unable to execute task: ${message}`);
-      setErrorDetails({ code: "NETWORK_ERROR", message });
+      dispatch({
+        type: "SET_ERROR",
+        payload: { code: "NETWORK_ERROR", message },
+      });
+    } finally {
+      if (currentRunIdRef.current === runId) {
+        abortControllerRef.current = null;
+      }
     }
   };
 
@@ -211,27 +302,31 @@ export default function DashboardPage() {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
-    setAgentState(AgentState.CANCELLED);
-    setFinalStatus("cancelled");
-    setCurrentActionName(undefined);
-    setStatusMessage("Task stopped by user.");
-    setEvents((prev) => [
-      ...prev,
-      {
-        id: `evt-${Date.now()}-stop`,
-        taskId: "task-stopped",
-        type: "CANCELLED",
-        timestamp: new Date().toISOString(),
-        message: "Execution cancelled by user request.",
-      },
-    ]);
+    if (session.activeTaskId) {
+      fetch(`/api/agent?taskId=${encodeURIComponent(session.activeTaskId)}`, { method: "DELETE" }).catch(() => {});
+    }
+    dispatch({ type: "STOP_TASK" });
   };
 
-  const isRunning =
-    agentState !== AgentState.IDLE &&
-    agentState !== AgentState.COMPLETED &&
-    agentState !== AgentState.FAILED &&
-    agentState !== AgentState.CANCELLED;
+  const isTerminalOrAwaiting =
+    Boolean(session.finalStatus) ||
+    session.waitingForUser ||
+    session.agentState === AgentState.IDLE ||
+    session.agentState === AgentState.COMPLETED ||
+    session.agentState === AgentState.FAILED ||
+    session.agentState === AgentState.CANCELLED ||
+    session.agentState === AgentState.WAITING_FOR_USER ||
+    session.lifecycleState === "needs_clarification" ||
+    session.lifecycleState === "waiting_for_user" ||
+    session.lifecycleState === "blocked" ||
+    session.lifecycleState === "cancelled" ||
+    session.lifecycleState === "failed" ||
+    session.lifecycleState === "timed_out" ||
+    session.lifecycleState === "completed" ||
+    session.lifecycleState === "success" ||
+    session.lifecycleState === "partial_success";
+
+  const isRunning = !isTerminalOrAwaiting;
 
   return (
     <div className="min-h-screen bg-[#FFFFFF] text-[#1F2933] flex flex-col font-sans">
@@ -252,7 +347,74 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2.5">
+          {/* Enforced Live Browser Execution Indicator */}
+          <div
+            id="exec-mode-live-indicator"
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-semibold bg-[#EEF6FB] text-[#24485A] border border-[#D9E8EF] shadow-sm select-none"
+            title="Real Playwright browser execution against live websites and resources"
+          >
+            <span className="w-2 h-2 rounded-full bg-[#5F9E7A]"></span>
+            <span>Live Mode</span>
+          </div>
+
+          {/* Visible Browser Window Indicator */}
+          <div
+            id="visible-browser-indicator"
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-semibold bg-[#EEF6FB] text-[#24485A] border border-[#D9E8EF] shadow-sm select-none"
+            title={
+              session.browserWindow.isOpen
+                ? `Visible browser window open (${session.browserWindow.taskId || "active"})`
+                : verifiedBrowserState?.isLaunched && verifiedBrowserState.openWindows > 0
+                ? `Visible Playwright Chromium instance active (${verifiedBrowserState.openWindows} window${verifiedBrowserState.openWindows === 1 ? "" : "s"} retained)`
+                : verifiedBrowserState?.displayAvailable === false
+                ? "No active display server detected: cannot render visible browser window"
+                : "Launches an isolated visible Chromium window for each task"
+            }
+          >
+            <span
+              className={`w-2 h-2 rounded-full ${
+                session.browserWindow.isOpen
+                  ? "bg-[#5F9E7A]"
+                  : verifiedBrowserState?.isLaunched && verifiedBrowserState.openWindows > 0
+                  ? "bg-[#5F9E7A]"
+                  : verifiedBrowserState?.displayAvailable === false
+                  ? "bg-[#D97706]"
+                  : session.browserWindow.isVisible
+                  ? "bg-[#667784]"
+                  : "bg-[#4F8EAD]"
+              }`}
+            />
+            <span>
+              {session.browserWindow.isOpen
+                ? `Visible Window (${session.browserWindow.taskId ? session.browserWindow.taskId.slice(-5) : "Open"})`
+                : verifiedBrowserState?.isLaunched && verifiedBrowserState.openWindows > 0
+                ? `Visible Windows (${verifiedBrowserState.openWindows})`
+                : verifiedBrowserState?.displayAvailable === false
+                ? "No Display"
+                : session.browserWindow.isVisible
+                ? "Window Closed"
+                : "Visible Browser"}
+            </span>
+          </div>
+
+          {providerInfo && (
+            <div
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium border ${
+                providerInfo.isLive
+                  ? "bg-[#EEF6FB] text-[#24485A] border-[#D9E8EF]"
+                  : "bg-[#FFF8E7] text-[#8C6D23] border-[#F1DFB5]"
+              }`}
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  providerInfo.isLive ? "bg-[#4F8EAD]" : "bg-[#C59A52]"
+                }`}
+              />
+              <span>{providerInfo.isLive ? "Live" : "Mock"} • {providerInfo.provider}</span>
+            </div>
+          )}
+
           <div className="flex items-center gap-2 px-2.5 py-1 rounded-md bg-[#F7FAFC] border border-[#D9E8EF] text-xs">
             <span
               className={`w-2 h-2 rounded-full ${
@@ -264,7 +426,7 @@ export default function DashboardPage() {
               }`}
             />
             <span className="text-[#24485A] font-medium text-[11px]">
-              {systemHealthy === true ? "Engine Online" : systemHealthy === false ? "Offline" : "Connecting..."}
+              {engineHealthText}
             </span>
           </div>
 
@@ -280,44 +442,82 @@ export default function DashboardPage() {
 
       {/* Main Content Layout (Part 24 & 52) */}
       <main className="flex-1 p-6 max-w-4xl mx-auto w-full space-y-5">
+        {/* Remote / Headless Environment Warning */}
+        {displayLimitation && (
+          <div
+            id="display-limitation-banner"
+            className="flex items-start gap-3 p-3.5 bg-[#FFF8E7] border border-[#F1DFB5] rounded-xl text-xs text-[#8C6D23] shadow-sm animate-in fade-in"
+          >
+            <AlertTriangle className="w-4 h-4 shrink-0 text-[#C59A52] mt-0.5" />
+            <div className="space-y-1">
+              <div className="font-semibold text-[#6E4F10]">
+                Graphical Display Unavailable in Current Environment
+              </div>
+              <div className="text-[#8C6D23] leading-relaxed">
+                {displayLimitation}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Task Input Card */}
-        <TaskInput onRun={handleRunTask} onStop={handleStopTask} isRunning={isRunning} />
+        <TaskInput
+          task={session.taskPrompt}
+          targetUrl={session.targetUrlInput}
+          onTaskChange={(task) => dispatch({ type: "SET_TASK_PROMPT", payload: task })}
+          onTargetUrlChange={(url) => dispatch({ type: "SET_TARGET_URL", payload: url })}
+          onRun={handleRunTask}
+          onStop={handleStopTask}
+          onClear={resetTaskSession}
+          isRunning={isRunning}
+          hasSessionData={hasSessionData(session)}
+        />
 
         {/* Simple Status Card (Part 25) */}
         <ExecutionPanel
-          state={agentState}
-          currentUrl={currentUrl}
-          currentPageTitle={currentPageTitle}
-          currentActionName={currentActionName}
-          startTime={startTime}
-          totalSteps={plan?.actions.length || 0}
-          currentStepIndex={currentStepIndex}
-          statusMessage={statusMessage}
+          state={session.agentState}
+          lifecycleState={session.lifecycleState}
+          finalStatus={session.finalStatus}
+          currentUrl={session.currentUrl}
+          currentPageTitle={session.currentPageTitle}
+          currentActionName={session.currentActionName}
+          startTime={session.startTime}
+          totalSteps={session.plan?.actions.length || 0}
+          currentStepIndex={session.currentStepIndex}
+          statusMessage={session.statusMessage}
+          browserWindow={session.browserWindow}
         />
 
         {/* Error / User Intervention Panel */}
         <ErrorPanel
-          error={errorDetails}
-          retries={retriesCount}
-          replans={replansCount}
-          waitingForUser={waitingForUser}
-          onUserConfirm={() => setWaitingForUser(false)}
+          error={session.errorDetails}
+          retries={session.retriesCount}
+          replans={session.replansCount}
+          waitingForUser={session.waitingForUser}
+          onUserConfirm={() => dispatch({ type: "SET_WAITING_FOR_USER", payload: false })}
         />
 
         {/* Result-First Display (Part 27) */}
         <ResultPanel
-          status={finalStatus}
-          statusMessage={statusMessage}
-          extractedData={extractedData}
-          downloads={downloads}
-          screenshots={screenshots}
-          sourceUrl={currentUrl}
+          status={session.finalStatus}
+          statusMessage={session.statusMessage}
+          extractedData={session.extractedData}
+          downloads={session.downloads}
+          screenshots={session.screenshots}
+          sourceUrl={session.currentUrl}
+          taskVerification={session.taskVerification}
+          executionMode={executionMode}
+          interpretedTask={session.plan?.taskSpec?.target?.entity || session.plan?.taskSpec?.rawTask}
+          constraints={session.plan?.taskSpec?.constraints?.map((c: any) => `${c.type}: ${c.value ?? c.field}`)}
+          recoveryHistory={session.recoveryHistory}
+          taskId={session.activeTaskId}
+          planningMetadata={session.planningMetadata}
         />
 
         {/* Collapsible Advanced Details (Part 26) */}
         <div className="border border-[#D9E8EF] rounded-xl bg-[#FFFFFF] overflow-hidden transition-all shadow-subtle">
           <button
-            onClick={() => setIsAdvancedOpen(!isAdvancedOpen)}
+            onClick={() => dispatch({ type: "SET_ADVANCED_OPEN", payload: !session.isAdvancedOpen })}
             className="w-full px-5 py-3.5 bg-[#F7FAFC] hover:bg-[#EEF6FB] flex items-center justify-between text-xs font-semibold text-[#24485A] transition-colors"
           >
             <span className="flex items-center gap-2">
@@ -325,7 +525,7 @@ export default function DashboardPage() {
               Advanced Details
             </span>
             <span className="flex items-center gap-1 text-[#667784]">
-              {isAdvancedOpen ? (
+              {session.isAdvancedOpen ? (
                 <>
                   Collapse <ChevronUp className="w-3.5 h-3.5" />
                 </>
@@ -337,14 +537,14 @@ export default function DashboardPage() {
             </span>
           </button>
 
-          {isAdvancedOpen && (
+          {session.isAdvancedOpen && (
             <div className="p-5 space-y-4 border-t border-[#D9E8EF]">
               {/* Tab Navigation */}
               <div className="flex items-center gap-1 border-b border-[#D9E8EF] pb-2 text-xs">
                 <button
-                  onClick={() => setAdvancedTab("plan")}
+                  onClick={() => dispatch({ type: "SET_ADVANCED_TAB", payload: "plan" })}
                   className={`px-3 py-1.5 rounded-lg font-medium transition-colors ${
-                    advancedTab === "plan"
+                    session.advancedTab === "plan"
                       ? "bg-[#4F8EAD] text-white"
                       : "text-[#667784] hover:text-[#24485A] hover:bg-[#EEF6FB]"
                   }`}
@@ -352,9 +552,9 @@ export default function DashboardPage() {
                   Plan
                 </button>
                 <button
-                  onClick={() => setAdvancedTab("page")}
+                  onClick={() => dispatch({ type: "SET_ADVANCED_TAB", payload: "page" })}
                   className={`px-3 py-1.5 rounded-lg font-medium transition-colors ${
-                    advancedTab === "page"
+                    session.advancedTab === "page"
                       ? "bg-[#4F8EAD] text-white"
                       : "text-[#667784] hover:text-[#24485A] hover:bg-[#EEF6FB]"
                   }`}
@@ -362,19 +562,19 @@ export default function DashboardPage() {
                   Page Details
                 </button>
                 <button
-                  onClick={() => setAdvancedTab("trace")}
+                  onClick={() => dispatch({ type: "SET_ADVANCED_TAB", payload: "trace" })}
                   className={`px-3 py-1.5 rounded-lg font-medium transition-colors ${
-                    advancedTab === "trace"
+                    session.advancedTab === "trace"
                       ? "bg-[#4F8EAD] text-white"
                       : "text-[#667784] hover:text-[#24485A] hover:bg-[#EEF6FB]"
                   }`}
                 >
-                  Execution Trace ({events.length})
+                  Execution Trace ({session.events.length})
                 </button>
                 <button
-                  onClick={() => setAdvancedTab("diagnostics")}
+                  onClick={() => dispatch({ type: "SET_ADVANCED_TAB", payload: "diagnostics" })}
                   className={`px-3 py-1.5 rounded-lg font-medium transition-colors ${
-                    advancedTab === "diagnostics"
+                    session.advancedTab === "diagnostics"
                       ? "bg-[#4F8EAD] text-white"
                       : "text-[#667784] hover:text-[#24485A] hover:bg-[#EEF6FB]"
                   }`}
@@ -384,19 +584,23 @@ export default function DashboardPage() {
               </div>
 
               {/* Tab Contents */}
-              {advancedTab === "plan" && (
-                <PlanViewer plan={plan} currentStepIndex={currentStepIndex} />
+              {session.advancedTab === "plan" && (
+                <PlanViewer
+                  plan={session.plan}
+                  currentStepIndex={session.currentStepIndex}
+                  isTaskVerified={session.taskVerification?.passed ?? false}
+                />
               )}
 
-              {advancedTab === "page" && (
-                <BrowserState observation={observation} />
+              {session.advancedTab === "page" && (
+                <BrowserState observation={session.observation} tabs={session.browserTabs} />
               )}
 
-              {advancedTab === "trace" && (
-                <ActionLog events={events} />
+              {session.advancedTab === "trace" && (
+                <ActionLog events={session.events} />
               )}
 
-              {advancedTab === "diagnostics" && (
+              {session.advancedTab === "diagnostics" && (
                 <div className="space-y-3 text-xs">
                   <div className="bg-[#F7FAFC] border border-[#D9E8EF] rounded-lg p-3 space-y-2">
                     <div className="font-semibold text-[#24485A] flex items-center gap-1.5">
@@ -404,9 +608,9 @@ export default function DashboardPage() {
                       Route Decision
                     </div>
                     <div className="text-[#1F2933]">
-                      Route: <span className="font-semibold text-[#4F8EAD]">{plan?.routeDecision?.route.toUpperCase() || "BROWSER"}</span>
+                      Route: <span className="font-semibold text-[#4F8EAD]">{session.plan?.routeDecision?.route.toUpperCase() || "BROWSER"}</span>
                     </div>
-                    <p className="text-[#667784]">{plan?.routeDecision?.reason || "Default browser automation route selected."}</p>
+                    <p className="text-[#667784]">{session.plan?.routeDecision?.reason || "Default browser automation route selected."}</p>
                   </div>
 
                   <div className="bg-[#F7FAFC] border border-[#D9E8EF] rounded-lg p-3 space-y-2">
@@ -417,19 +621,19 @@ export default function DashboardPage() {
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
                       <div className="p-2 bg-[#FFFFFF] border border-[#D9E8EF] rounded">
                         <div className="text-[10px] text-[#667784]">Retries</div>
-                        <div className="font-bold text-[#24485A]">{retriesCount}</div>
+                        <div className="font-bold text-[#24485A]">{session.retriesCount}</div>
                       </div>
                       <div className="p-2 bg-[#FFFFFF] border border-[#D9E8EF] rounded">
                         <div className="text-[10px] text-[#667784]">Replans</div>
-                        <div className="font-bold text-[#24485A]">{replansCount}</div>
+                        <div className="font-bold text-[#24485A]">{session.replansCount}</div>
                       </div>
                       <div className="p-2 bg-[#FFFFFF] border border-[#D9E8EF] rounded">
                         <div className="text-[10px] text-[#667784]">Steps Completed</div>
-                        <div className="font-bold text-[#5F9E7A]">{currentStepIndex}</div>
+                        <div className="font-bold text-[#5F9E7A]">{session.currentStepIndex}</div>
                       </div>
                       <div className="p-2 bg-[#FFFFFF] border border-[#D9E8EF] rounded">
                         <div className="text-[10px] text-[#667784]">False Successes</div>
-                        <div className="font-bold text-[#5F9E7A]">0 (Guaranteed)</div>
+                        <div className="font-bold text-[#5F9E7A]">0 in benchmark</div>
                       </div>
                     </div>
                   </div>
@@ -457,7 +661,12 @@ export default function DashboardPage() {
       </footer>
 
       {/* Settings Modal */}
-      <SettingsPanel isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
+      <SettingsPanel
+        isOpen={isSettingsOpen}
+        settings={settings}
+        onSave={(newSettings) => setSettings(newSettings)}
+        onClose={() => setIsSettingsOpen(false)}
+      />
     </div>
   );
 }

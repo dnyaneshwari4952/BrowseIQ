@@ -1,17 +1,25 @@
 "use client";
 
-import React, { useState } from "react";
-import { Eye, Search, CheckCircle, XCircle, ChevronDown, ChevronUp } from "lucide-react";
-import { PageObservation } from "@/lib/types/browser";
+import React, { useState, useEffect } from "react";
+import { Eye, Search, ChevronDown, ChevronUp, Play, Pause, Volume2, VolumeX, Layers, Globe, ShieldAlert } from "lucide-react";
+import { PageObservation, BrowserTab } from "@/lib/types/browser";
 
 interface BrowserStateProps {
   observation?: PageObservation | null;
+  tabs?: BrowserTab[];
 }
 
-export function BrowserState({ observation }: BrowserStateProps) {
+export function BrowserState({ observation, tabs = [] }: BrowserStateProps) {
   const [filter, setFilter] = useState<"all" | "button" | "input" | "link">("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [isExpanded, setIsExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!observation) {
+      setSearchQuery("");
+      setFilter("all");
+    }
+  }, [observation]);
 
   if (!observation) {
     return (
@@ -42,11 +50,24 @@ export function BrowserState({ observation }: BrowserStateProps) {
 
   return (
     <div className="bg-[#FFFFFF] border border-[#D9E8EF] rounded-xl p-4.5 shadow-card space-y-3">
-      {/* Concise Summary First (Part 30) */}
+      {/* Header and Controls */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#D9E8EF] pb-3">
         <div className="flex items-center gap-2">
           <Eye className="w-4 h-4 text-[#4F8EAD]" />
-          <h3 className="text-xs font-semibold text-[#24485A]">Page Details</h3>
+          <h3 className="text-xs font-semibold text-[#24485A]">Page & Browser Context</h3>
+          {observation.pageType && observation.pageType !== "normal" && (
+            <span
+              className={`text-[10px] uppercase font-mono px-2 py-0.5 rounded font-semibold ${
+                observation.pageType === "challenge"
+                  ? "bg-[#FEF2F2] text-[#DC2626] border border-[#FEE2E2]"
+                  : observation.pageType === "error"
+                  ? "bg-[#FEF2F2] text-[#DC2626] border border-[#FEE2E2]"
+                  : "bg-[#EEF6FB] text-[#4F8EAD] border border-[#D9E8EF]"
+              }`}
+            >
+              {observation.pageType}
+            </span>
+          )}
         </div>
 
         <button
@@ -65,10 +86,47 @@ export function BrowserState({ observation }: BrowserStateProps) {
         </button>
       </div>
 
+      {/* Tabs Context (Section 10 Observability) */}
+      {tabs.length > 0 && (
+        <div className="bg-[#F7FAFC] border border-[#D9E8EF] rounded-lg p-2.5 text-xs space-y-1.5">
+          <div className="text-[11px] text-[#667784] font-semibold flex items-center gap-1.5">
+            <Layers className="w-3.5 h-3.5 text-[#4F8EAD]" /> Open Browser Tabs ({tabs.length})
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {tabs.map((tab) => (
+              <div
+                key={tab.id}
+                className={`px-2.5 py-1 rounded text-[11px] font-mono flex items-center gap-1.5 border transition-colors ${
+                  tab.isActive
+                    ? "bg-[#FFFFFF] border-[#4F8EAD] text-[#24485A] font-bold shadow-xs"
+                    : "bg-[#F7FAFC] border-[#D9E8EF] text-[#667784]"
+                }`}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full ${tab.isActive ? "bg-[#5F9E7A]" : "bg-[#D9E8EF]"}`}></span>
+                <span className="truncate max-w-[180px]" title={tab.title || tab.url}>
+                  {tab.title || tab.url}
+                </span>
+                {tab.isActive && <span className="text-[9px] uppercase tracking-wider text-[#4F8EAD] font-sans">Active</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* URL Banner */}
+      {observation.url && (
+        <div className="bg-[#F7FAFC] border border-[#D9E8EF] rounded-lg p-2.5 text-xs">
+          <div className="text-[11px] text-[#667784] font-medium">Browser URL</div>
+          <div className="font-mono text-[11px] text-[#24485A] break-all truncate" title={observation.url}>
+            {observation.url}
+          </div>
+        </div>
+      )}
+
       {/* Summary Box */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
         <div className="bg-[#F7FAFC] border border-[#D9E8EF] rounded-lg p-2.5">
-          <div className="text-[11px] text-[#667784] font-medium">Current Page</div>
+          <div className="text-[11px] text-[#667784] font-medium">Page Title</div>
           <div className="font-semibold text-[#24485A] truncate" title={observation.title}>
             {observation.title || "Untitled"}
           </div>
@@ -88,6 +146,86 @@ export function BrowserState({ observation }: BrowserStateProps) {
           </div>
         </div>
       </div>
+
+      {/* Media Elements Status (Section 2, 3, 10) */}
+      {observation.mediaElements && observation.mediaElements.length > 0 && (
+        <div className="bg-[#F7FAFC] border border-[#D9E8EF] rounded-lg p-3 text-xs space-y-2">
+          <div className="text-[11px] text-[#24485A] font-semibold flex items-center justify-between">
+            <span className="flex items-center gap-1.5">
+              <Play className="w-3.5 h-3.5 text-[#4F8EAD]" /> Observed Media Playback ({observation.mediaElements.length})
+            </span>
+          </div>
+          <div className="space-y-2">
+            {observation.mediaElements.map((media, idx) => (
+              <div key={idx} className="p-2.5 bg-[#FFFFFF] border border-[#D9E8EF] rounded-lg space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-[#EEF6FB] text-[#24485A] border border-[#D9E8EF]">
+                      {media.tagName}
+                    </span>
+                    <span className="text-xs font-semibold text-[#1F2933]">
+                      {media.isPlaying ? "Playing" : media.isPaused ? "Paused" : "Idle"}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {media.isPlaying ? (
+                      <span className="flex items-center gap-1 text-[11px] text-[#5F9E7A] font-medium">
+                        <Play className="w-3 h-3 fill-current" /> Active
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1 text-[11px] text-[#667784] font-medium">
+                        <Pause className="w-3 h-3" /> Paused
+                      </span>
+                    )}
+                    {media.isMuted ? (
+                      <span title="Muted">
+                        <VolumeX className="w-3.5 h-3.5 text-[#C96B6B]" />
+                      </span>
+                    ) : (
+                      <span title="Audio Active">
+                        <Volume2 className="w-3.5 h-3.5 text-[#5F9E7A]" />
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Progress bar */}
+                <div className="space-y-1">
+                  <div className="w-full bg-[#E5E7EB] rounded-full h-1.5 overflow-hidden">
+                    <div
+                      className="bg-[#4F8EAD] h-full transition-all duration-300"
+                      style={{
+                        width: `${media.duration > 0 ? (media.currentTime / media.duration) * 100 : 0}%`,
+                      }}
+                    ></div>
+                  </div>
+                  <div className="flex justify-between text-[10px] font-mono text-[#667784]">
+                    <span>{Math.floor(media.currentTime)}s</span>
+                    <span>{media.duration ? `${Math.floor(media.duration)}s` : "Live Stream"}</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Headings if any */}
+      {observation.headings && observation.headings.length > 0 && (
+        <div className="bg-[#F7FAFC] border border-[#D9E8EF] rounded-lg p-2.5 text-xs">
+          <div className="text-[11px] text-[#667784] font-medium mb-1">Page Headings</div>
+          <div className="flex flex-wrap gap-1.5">
+            {observation.headings.map((h, i) => (
+              <span
+                key={i}
+                className="bg-[#FFFFFF] border border-[#D9E8EF] text-[#24485A] px-2 py-0.5 rounded text-[11px] font-medium"
+              >
+                {h}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Expandable Element Inspection List */}
       {isExpanded && (

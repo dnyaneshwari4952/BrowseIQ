@@ -1,11 +1,13 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { CheckCircle2, Clock, Loader2, AlertCircle, XCircle } from "lucide-react";
+import { CheckCircle2, Clock, Loader2, AlertCircle, XCircle, HelpCircle, ShieldAlert } from "lucide-react";
 import { AgentState } from "@/lib/types/plans";
 
 interface ExecutionPanelProps {
   state: AgentState;
+  lifecycleState?: string;
+  finalStatus?: string;
   currentUrl?: string;
   currentPageTitle?: string;
   currentActionName?: string;
@@ -13,10 +15,17 @@ interface ExecutionPanelProps {
   totalSteps?: number;
   currentStepIndex?: number;
   statusMessage?: string;
+  browserWindow?: {
+    taskId?: string;
+    isVisible?: boolean;
+    isOpen?: boolean;
+  };
 }
 
 export function ExecutionPanel({
   state,
+  lifecycleState,
+  finalStatus,
   currentUrl,
   currentPageTitle,
   currentActionName,
@@ -24,17 +33,52 @@ export function ExecutionPanel({
   totalSteps = 0,
   currentStepIndex = 0,
   statusMessage,
+  browserWindow,
 }: ExecutionPanelProps) {
   const [elapsedSec, setElapsedSec] = useState(0);
 
+  const isNeedsClarification =
+    state === AgentState.WAITING_FOR_USER ||
+    lifecycleState === "needs_clarification" ||
+    lifecycleState === "waiting_for_user" ||
+    finalStatus === "needs_clarification" ||
+    finalStatus === "waiting_for_user";
+
+  const isBlocked =
+    lifecycleState === "blocked" || finalStatus === "blocked";
+
+  const isCompleted =
+    state === AgentState.COMPLETED ||
+    lifecycleState === "completed" ||
+    lifecycleState === "success" ||
+    lifecycleState === "partial_success" ||
+    finalStatus === "completed" ||
+    finalStatus === "partial_success";
+
+  const isCancelled =
+    state === AgentState.CANCELLED || lifecycleState === "cancelled" || finalStatus === "cancelled";
+
+  const isFailed =
+    (state === AgentState.FAILED && !isBlocked) ||
+    lifecycleState === "failed" ||
+    finalStatus === "failed" ||
+    finalStatus === "timed_out" ||
+    finalStatus === "unsupported_task";
+
+  const isRunning =
+    !isNeedsClarification &&
+    !isBlocked &&
+    !isCompleted &&
+    !isFailed &&
+    !isCancelled &&
+    state !== AgentState.IDLE &&
+    !finalStatus;
+
   useEffect(() => {
-    if (
-      !startTime ||
-      state === AgentState.IDLE ||
-      state === AgentState.COMPLETED ||
-      state === AgentState.FAILED ||
-      state === AgentState.CANCELLED
-    ) {
+    if (!startTime || !isRunning) {
+      if (!startTime) {
+        setElapsedSec(0);
+      }
       return;
     }
     const start = new Date(startTime).getTime();
@@ -43,20 +87,11 @@ export function ExecutionPanel({
     }, 500);
 
     return () => clearInterval(interval);
-  }, [startTime, state]);
+  }, [startTime, isRunning]);
 
-  if (state === AgentState.IDLE) {
+  if (state === AgentState.IDLE && !finalStatus) {
     return null; // Keep screen clean and calm until a task is started
   }
-
-  const isRunning =
-    state !== AgentState.COMPLETED &&
-    state !== AgentState.FAILED &&
-    state !== AgentState.CANCELLED;
-
-  const isCompleted = state === AgentState.COMPLETED;
-  const isFailed = state === AgentState.FAILED;
-  const isCancelled = state === AgentState.CANCELLED;
 
   // Stages
   const isUnderstandingDone = state !== AgentState.UNDERSTANDING;
@@ -84,6 +119,20 @@ export function ExecutionPanel({
             </div>
           )}
 
+          {isNeedsClarification && (
+            <div className="flex items-center gap-2 text-[#D97706]">
+              <HelpCircle className="w-5 h-5 text-[#D97706]" />
+              <span className="text-sm font-semibold text-[#D97706]">Needs Clarification</span>
+            </div>
+          )}
+
+          {isBlocked && (
+            <div className="flex items-center gap-2 text-[#C96B6B]">
+              <ShieldAlert className="w-5 h-5 text-[#C96B6B]" />
+              <span className="text-sm font-semibold text-[#C96B6B]">Access Blocked</span>
+            </div>
+          )}
+
           {isCompleted && (
             <div className="flex items-center gap-2 text-[#5F9E7A]">
               <CheckCircle2 className="w-5 h-5" />
@@ -103,6 +152,23 @@ export function ExecutionPanel({
               <XCircle className="w-5 h-5" />
               <span className="text-sm font-semibold text-[#667784]">Task Cancelled</span>
             </div>
+          )}
+
+          {lifecycleState && (
+            <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded bg-[#EEF6FB] text-[#24485A] border border-[#D9E8EF] font-semibold">
+              {lifecycleState}
+            </span>
+          )}
+
+          {browserWindow?.isVisible && (
+            <span
+              id="panel-browser-window-badge"
+              className="text-[10px] font-mono flex items-center gap-1.5 px-2 py-0.5 rounded bg-[#EEF6FB] text-[#24485A] border border-[#D9E8EF] font-semibold"
+              title={browserWindow.isOpen ? `Visible browser window open (${browserWindow.taskId || ""})` : "Browser window closed"}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${browserWindow.isOpen ? "bg-[#5F9E7A]" : "bg-[#667784]"}`} />
+              {browserWindow.isOpen ? "Visible Window Active" : "Window Closed"}
+            </span>
           )}
         </div>
 
@@ -185,6 +251,21 @@ export function ExecutionPanel({
           {currentUrl && (
             <span className="text-[#667784] font-mono text-[11px] truncate max-w-xs ml-2 hidden sm:inline" title={currentUrl}>
               {currentUrl}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Retained Visible Browser Window Note (Section 5 Window Persistence) */}
+      {(isCompleted || isFailed) && browserWindow?.isOpen && (
+        <div className="text-[11px] text-[#5F9E7A] bg-[#F0FDF4] border border-[#DCFCE7] px-3 py-1.5 rounded-lg flex items-center justify-between">
+          <span className="flex items-center gap-1.5 font-medium">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#5F9E7A]"></span>
+            Visible browser window retained on desktop for inspection. Close when finished.
+          </span>
+          {browserWindow.taskId && (
+            <span className="font-mono text-[#667784] text-[10px]">
+              {browserWindow.taskId}
             </span>
           )}
         </div>

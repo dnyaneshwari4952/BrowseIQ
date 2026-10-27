@@ -1,10 +1,12 @@
 /**
- * Prompt Injection Defense (Part 17)
+ * Prompt Injection Defense (Part 17 & Phase 3 Security Hardening)
  * Ensures untrusted webpage content cannot hijack agent policy, leak credentials,
- * or execute unauthorized commands.
+ * execute unauthorized commands, or bypass developer safety rules.
  */
 
 import { PageObservation, ObservedElement } from "../types/browser";
+import { Action, ActionType } from "../types/actions";
+import { validateUrlString } from "../validation/url-policy";
 
 export interface InjectionScanResult {
   isSuspicious: boolean;
@@ -13,12 +15,24 @@ export interface InjectionScanResult {
   sanitizedContent: string;
 }
 
+export interface ExtractedDataWithProvenance {
+  data: unknown;
+  provenance: {
+    sourceUrl: string;
+    timestamp: string;
+    untrustedPageData: true;
+  };
+}
+
 const SUSPICIOUS_PATTERNS = [
   /ignore\s+(all\s+)?(previous|prior|above)\s+instructions/i,
   /disregard\s+(all\s+)?(previous|prior)\s+prompts/i,
   /you\s+are\s+now\s+in\s+developer\s+mode/i,
   /system\s+override/i,
   /send\s+(the\s+)?(api[_\s-]?key|secret|token|password|credential)/i,
+  /reveal\s+(all\s+)?(secrets?|api[_\s-]?keys?|passwords?|credentials?|tokens?)/i,
+  /show\s+(the\s+)?(system\s+prompt|credentials?|api[_\s-]?key)/i,
+  /print\s+(the\s+)?(env|process\.env|environment\s+variables?)/i,
   /exfiltrat(e|ing)\s+/i,
   /eval\s*\(/i,
   /<script\b[^>]*>/i,
@@ -27,6 +41,24 @@ const SUSPICIOUS_PATTERNS = [
   /burpcollaborator/i,
   /transfer\s+(\$|₹|usd|eur|inr|[0-9]+)/i,
   /delete\s+(all|database|account|users)/i,
+  /download\s+(and\s+(run|execute)\s+)?.*?\.(exe|bat|cmd|sh|ps1|msi|vbs|dll|scr|pif)/i,
+  /forget\s+(what\s+)?the\s+user\s+(said|asked|requested)/i,
+  /do\s+not\s+(perform|search|run|complete)\s+the\s+user/i,
+];
+
+const DANGEROUS_EXTENSIONS = [
+  ".exe",
+  ".bat",
+  ".cmd",
+  ".sh",
+  ".ps1",
+  ".msi",
+  ".vbs",
+  ".scr",
+  ".pif",
+  ".dll",
+  ".com",
+  ".jar",
 ];
 
 export class PromptDefense {
@@ -62,6 +94,97 @@ export class PromptDefense {
       threatLevel,
       matchedPatterns,
       sanitizedContent,
+    };
+  }
+
+  /**
+   * Validates planned actions against developer policy and user task to prevent prompt-injection exploits.
+   * Enforced in code before action execution.
+   */
+  static validateActionSafety(
+    action: Action,
+    authorizedTask: string,
+    initialTargetUrl?: string
+  ): { safe: boolean; reason?: string } {
+    const taskLower = authorizedTask.toLowerCase();
+
+    // 1. Navigation Safety: Prevent unauthorized off-target redirects
+    if (action.type === ActionType.NAVIGATE && action.value) {
+      const navUrl = String(action.value);
+      try {
+        const parsedNav = validateUrlString(navUrl, "prompt defense action validation");
+
+        if (initialTargetUrl) {
+          const parsedInitial = new URL(initialTargetUrl, "http://localhost:3000");
+          // If initial target was specified, prevent navigating to completely unrelated external origin
+          // unless user task explicitly mentioned navigating across domains
+          const navHost = parsedNav.hostname.toLowerCase();
+          const initHost = parsedInitial.hostname.toLowerCase();
+
+          const isSameHost = navHost === initHost || navHost.endsWith(`.${initHost}`);
+          const isTaskMultiDomain = taskLower.includes(navHost) || taskLower.includes("cross-origin") || taskLower.includes("multi-domain");
+
+          if (!isSameHost && !isTaskMultiDomain) {
+            return {
+              safe: false,
+              reason: `Unauthorized cross-origin navigation to '${navHost}' blocked. Authorized host: '${initHost}'`,
+            };
+          }
+        }
+      } catch (err: unknown) {
+        return {
+          safe: false,
+          reason: `Invalid or prohibited navigation URL: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+    }
+
+    // 2. Download Safety: Prohibit automatic execution or download of executable file types
+    if (action.type === ActionType.DOWNLOAD) {
+      const targetStr = (action.target?.value || "").toLowerCase();
+      const valueStr = String(action.value || "").toLowerCase();
+      const reasonStr = (action.reason || "").toLowerCase();
+
+      for (const ext of DANGEROUS_EXTENSIONS) {
+        if (targetStr.includes(ext) || valueStr.includes(ext) || reasonStr.includes(ext)) {
+          return {
+            safe: false,
+            reason: `Attempted download of potentially dangerous executable file (${ext}) blocked by safety policy.`,
+          };
+        }
+      }
+    }
+
+    // 3. Secret Leakage Prevention: Ensure no fill or type action inputs API keys or system secrets
+    if (action.type === ActionType.FILL || action.type === ActionType.TYPE) {
+      const val = String(action.value || "");
+      if (
+        /AIzaSy[A-Za-z0-9_-]{20,}/.test(val) ||
+        /sk-[a-zA-Z0-9]{20,}/.test(val) ||
+        /Bearer\s+[a-zA-Z0-9_\-\.]{20,}/i.test(val) ||
+        /(?:api[_\s-]?key|secret|token|password)\s*[:=]\s*[A-Za-z0-9_-]{10,}/i.test(val)
+      ) {
+        return {
+          safe: false,
+          reason: "Action attempts to type or disclose sensitive API key/credentials.",
+        };
+      }
+    }
+
+    return { safe: true };
+  }
+
+  /**
+   * Tags extracted data with provenance metadata to maintain clear audit trail.
+   */
+  static attachProvenance(data: unknown, sourceUrl: string): ExtractedDataWithProvenance {
+    return {
+      data,
+      provenance: {
+        sourceUrl,
+        timestamp: new Date().toISOString(),
+        untrustedPageData: true,
+      },
     };
   }
 

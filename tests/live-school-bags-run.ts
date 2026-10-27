@@ -12,7 +12,7 @@ async function main() {
 
   console.log("\n--- EXECUTION RESULTS ---");
   console.log("Final Status:", ctx.finalStatus);
-  console.log("Duration:", ctx.durationMs, "ms");
+  console.log("Status Message:", ctx.statusMessage);
   console.log("Route:", ctx.plan?.routeDecision?.route);
   console.log("Completed Steps Count:", ctx.completedSteps.length);
   ctx.completedSteps.forEach((s, idx) => {

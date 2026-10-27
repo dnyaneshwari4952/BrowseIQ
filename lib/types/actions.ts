@@ -28,8 +28,15 @@ export const ActionType = {
   OPEN_NEW_TAB: "openNewTab",
   SWITCH_TAB: "switchTab",
   CLOSE_TAB: "closeTab",
+  MEDIA_PLAY: "mediaPlay",
+  MEDIA_PAUSE: "mediaPause",
+  MEDIA_MUTE: "mediaMute",
+  MEDIA_SEEK: "mediaSeek",
+  MEDIA_VOLUME: "mediaVolume",
   EVALUATE_SAFE: "evaluateSafe",
   ASSERT: "assert",
+  INSPECT: "inspect",
+  REQUEST_CLARIFICATION: "requestClarification",
   FINISH: "finish",
 } as const;
 
@@ -58,6 +65,7 @@ export const LocatorStrategy = {
   NAME: "name",
   ID: "id",
   CSS: "css",
+  ACCESSIBLE_ATTR: "accessibleAttr",
   XPATH: "xpath",
 } as const;
 
@@ -73,6 +81,7 @@ export const ElementTargetSchema = z.object({
     LocatorStrategy.NAME,
     LocatorStrategy.ID,
     LocatorStrategy.CSS,
+    LocatorStrategy.ACCESSIBLE_ATTR,
     LocatorStrategy.XPATH,
   ]),
   value: z.string().min(1, "Target value cannot be empty"),
@@ -80,6 +89,7 @@ export const ElementTargetSchema = z.object({
   name: z.string().optional(),
   exact: z.boolean().default(false).optional(),
   index: z.number().int().nonnegative().optional(),
+  container: z.string().optional(),
   description: z.string().optional(),
 });
 
@@ -131,8 +141,15 @@ export const ActionSchema = z.object({
     ActionType.OPEN_NEW_TAB,
     ActionType.SWITCH_TAB,
     ActionType.CLOSE_TAB,
+    ActionType.MEDIA_PLAY,
+    ActionType.MEDIA_PAUSE,
+    ActionType.MEDIA_MUTE,
+    ActionType.MEDIA_SEEK,
+    ActionType.MEDIA_VOLUME,
     ActionType.EVALUATE_SAFE,
     ActionType.ASSERT,
+    ActionType.INSPECT,
+    ActionType.REQUEST_CLARIFICATION,
     ActionType.FINISH,
   ]),
   target: ElementTargetSchema.optional(),
@@ -143,6 +160,22 @@ export const ActionSchema = z.object({
   expectedState: ExpectedStateSchema.optional(),
   risk: z.enum([RiskLevel.LOW, RiskLevel.MEDIUM, RiskLevel.HIGH]).default(RiskLevel.LOW).optional(),
   reason: z.string().min(1, "Every action must provide a human-readable reason"),
+  /** Structured user intent associated with this specific action */
+  userIntent: z.string().optional(),
+  /** High-level semantic description of the target element or interaction boundary */
+  targetDescription: z.string().optional(),
+  /** Structured input parameters passed to this action */
+  parameters: z.record(z.unknown()).optional(),
+  /** Explicit preconditions required before this action may execute */
+  preconditions: z.array(z.string()).default([]).optional(),
+  /** Expected observable postconditions verified upon action completion */
+  postconditions: z.array(z.string()).default([]).optional(),
+  /** Explicit list of prior action IDs that must succeed before this action executes */
+  dependencies: z.array(z.string()).default([]).optional(),
+  /** Method used to independently verify action state transition */
+  verificationMethod: z.string().optional(),
+  /** Target metric, element, or property verified by the verificationMethod */
+  verificationTarget: z.string().optional(),
 });
 
 export type Action = z.infer<typeof ActionSchema>;
@@ -161,8 +194,21 @@ export type ActionStatus = (typeof ActionStatus)[keyof typeof ActionStatus];
 
 export interface ActionExecutionResult {
   actionId: string;
+  stepIndex?: number;
+  taskId?: string;
+  userIntent?: string;
   type: ActionType;
   status: ActionStatus;
+  currentUrl?: string;
+  targetDescription?: string;
+  validationResult?: {
+    valid: boolean;
+    reason?: string;
+    requiresConfirmation?: boolean;
+    skipAction?: boolean;
+    strategyUsed?: string;
+    isSafeToRetry?: boolean;
+  };
   startTime: string;
   endTime: string;
   durationMs: number;
@@ -173,7 +219,18 @@ export interface ActionExecutionResult {
     code: string;
     message: string;
     details?: unknown;
+    recoverable?: boolean;
+    category?: string;
   };
   retriesUsed: number;
+  replansUsed?: number;
+  resultingState?: {
+    url: string;
+    title: string;
+    isSettled?: boolean;
+    elementState?: Record<string, unknown>;
+  };
+  verificationEvidence?: Record<string, unknown>;
   verified: boolean;
 }
+

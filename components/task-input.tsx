@@ -4,39 +4,69 @@ import React, { useState, useEffect } from "react";
 import { Play, Square, RotateCcw, Globe, Sparkles } from "lucide-react";
 
 interface TaskInputProps {
+  task?: string;
+  targetUrl?: string;
+  onTaskChange?: (task: string) => void;
+  onTargetUrlChange?: (url: string) => void;
   onRun: (task: string, targetUrl?: string) => void;
   onStop: () => void;
+  onClear: () => void;
   isRunning: boolean;
   disabled?: boolean;
+  hasSessionData?: boolean;
 }
 
 const PRESET_TASKS = [
   {
-    label: "Product Search & Price",
-    task: "Search the product page for laptop and return the first product's name and price.",
-    url: "http://localhost:3000/test-fixtures/search",
+    label: "Wikipedia Search",
+    task: "Search Wikipedia for Playwright and extract the summary paragraph.",
+    url: "https://en.wikipedia.org",
   },
   {
-    label: "Contact Form",
-    task: "Fill the contact form with name and email, then submit.",
-    url: "http://localhost:3000/test-fixtures/form",
+    label: "Hacker News Top Story",
+    task: "Open Hacker News and find the top trending story title and points.",
+    url: "https://news.ycombinator.com",
   },
   {
-    label: "PDF Invoice Download",
-    task: "Download the latest invoice PDF document.",
-    url: "http://localhost:3000/test-fixtures/download",
+    label: "Playwright Docs",
+    task: "Navigate to Playwright docs and verify the installation guide.",
+    url: "https://playwright.dev",
   },
   {
-    label: "Fast Catalog API",
-    task: "Query product catalog API for laptops",
-    url: "http://localhost:3000/api/products?q=laptop",
+    label: "Quotes to Scrape",
+    task: "Extract the first quote and its author from Quotes to Scrape.",
+    url: "https://quotes.toscrape.com",
   },
 ];
 
-export function TaskInput({ onRun, onStop, isRunning, disabled }: TaskInputProps) {
-  const [task, setTask] = useState("");
-  const [targetUrl, setTargetUrl] = useState("");
+export function TaskInput({
+  task: controlledTask,
+  targetUrl: controlledTargetUrl,
+  onTaskChange,
+  onTargetUrlChange,
+  onRun,
+  onStop,
+  onClear,
+  isRunning,
+  disabled,
+  hasSessionData = false,
+}: TaskInputProps) {
+  const [internalTask, setInternalTask] = useState("");
+  const [internalTargetUrl, setInternalTargetUrl] = useState("");
   const [isMounted, setIsMounted] = useState(false);
+
+  const task = controlledTask !== undefined ? controlledTask : internalTask;
+  const targetUrl = controlledTargetUrl !== undefined ? controlledTargetUrl : internalTargetUrl;
+
+  const handleTaskChange = (val: string) => {
+    if (controlledTask === undefined) setInternalTask(val);
+    onTaskChange?.(val);
+  };
+
+  const handleTargetUrlChange = (val: string) => {
+    if (controlledTargetUrl === undefined) setInternalTargetUrl(val);
+    onTargetUrlChange?.(val);
+  };
 
   useEffect(() => {
     setIsMounted(true);
@@ -49,14 +79,21 @@ export function TaskInput({ onRun, onStop, isRunning, disabled }: TaskInputProps
   };
 
   const handleClear = () => {
-    setTask("");
-    setTargetUrl("");
+    if (controlledTask === undefined) setInternalTask("");
+    if (controlledTargetUrl === undefined) setInternalTargetUrl("");
+    onClear?.();
   };
 
   const selectPreset = (presetTask: string, presetUrl?: string) => {
-    setTask(presetTask);
-    if (presetUrl) setTargetUrl(presetUrl);
+    if (controlledTask === undefined) setInternalTask(presetTask);
+    onTaskChange?.(presetTask);
+    const resolvedUrl = presetUrl || "";
+    if (controlledTargetUrl === undefined) setInternalTargetUrl(resolvedUrl);
+    onTargetUrlChange?.(resolvedUrl);
   };
+
+  const hasContentToClear = Boolean(task.trim() || targetUrl.trim() || isRunning || hasSessionData);
+  const isClearDisabled = disabled || !hasContentToClear;
 
   return (
     <div className="bg-[#FFFFFF] border border-[#D9E8EF] rounded-xl p-5 shadow-card transition-shadow">
@@ -85,10 +122,11 @@ export function TaskInput({ onRun, onStop, isRunning, disabled }: TaskInputProps
         <div className="relative" suppressHydrationWarning>
           {isMounted ? (
             <textarea
+              id="task-prompt-input"
               value={task}
-              onChange={(e) => setTask(e.target.value)}
+              onChange={(e) => handleTaskChange(e.target.value)}
               disabled={isRunning || disabled}
-              placeholder="Search the product page for laptop and return the first product's name and price."
+              placeholder="Search Wikipedia for Playwright and extract the summary paragraph."
               rows={3}
               autoComplete="off"
               spellCheck={false}
@@ -103,7 +141,7 @@ export function TaskInput({ onRun, onStop, isRunning, disabled }: TaskInputProps
               className="w-full bg-[#FFFFFF] border border-[#D9E8EF] rounded-lg p-3 text-[#667784] text-sm font-sans min-h-[86px] select-none"
               suppressHydrationWarning
             >
-              Search the product page for laptop and return the first product&apos;s name and price.
+              Search Wikipedia for Playwright and extract the summary paragraph.
             </div>
           )}
         </div>
@@ -114,14 +152,15 @@ export function TaskInput({ onRun, onStop, isRunning, disabled }: TaskInputProps
               <Globe className="w-4 h-4" />
             </div>
             <input
+              id="target-url-input"
               type="text"
               value={targetUrl}
-              onChange={(e) => setTargetUrl(e.target.value)}
+              onChange={(e) => handleTargetUrlChange(e.target.value)}
               disabled={isRunning || disabled}
               autoComplete="off"
               spellCheck={false}
               suppressHydrationWarning
-              placeholder="Optional target URL (e.g. http://localhost:3000/test-fixtures/search)"
+              placeholder="Optional target URL (e.g. https://en.wikipedia.org or https://news.ycombinator.com)"
               className="w-full pl-9 pr-3 py-2 bg-[#FFFFFF] border border-[#D9E8EF] rounded-lg text-sm text-[#1F2933] placeholder-[#667784] focus:outline-none focus:border-[#4F8EAD] focus:ring-2 focus:ring-[#4F8EAD]/15 transition-all"
             />
           </div>
@@ -129,8 +168,9 @@ export function TaskInput({ onRun, onStop, isRunning, disabled }: TaskInputProps
           <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
             <button
               type="button"
+              id="task-clear-button"
               onClick={handleClear}
-              disabled={isRunning || (!task && !targetUrl)}
+              disabled={isClearDisabled}
               className="px-3.5 py-2 bg-[#FFFFFF] hover:bg-[#F0F7FA] text-[#24485A] border border-[#D9E8EF] text-sm font-medium rounded-lg transition-colors flex items-center gap-1.5 disabled:opacity-40"
             >
               <RotateCcw className="w-4 h-4 text-[#667784]" /> Clear
@@ -139,6 +179,7 @@ export function TaskInput({ onRun, onStop, isRunning, disabled }: TaskInputProps
             {isRunning ? (
               <button
                 type="button"
+                id="task-stop-button"
                 onClick={onStop}
                 className="px-4 py-2 bg-[#C96B6B] hover:bg-[#B55B5B] text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-1.5 shadow-sm"
               >
@@ -147,6 +188,7 @@ export function TaskInput({ onRun, onStop, isRunning, disabled }: TaskInputProps
             ) : (
               <button
                 type="submit"
+                id="task-run-button"
                 disabled={!task.trim() || disabled}
                 className="px-5 py-2 bg-[#4F8EAD] hover:bg-[#3D7692] text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-1.5 shadow-sm disabled:opacity-50"
               >

@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { Search, FileText, Clock, Shuffle, HelpCircle, Download, ExternalLink, Lock, AlertTriangle, XOctagon } from "lucide-react";
+import { notFound } from "next/navigation";
+import { Search, FileText, Clock, Shuffle, HelpCircle, Download, ExternalLink, Lock, AlertTriangle, XOctagon, ShieldAlert, ShieldCheck } from "lucide-react";
 
 const FIXTURES = [
   {
@@ -62,11 +63,32 @@ const FIXTURES = [
     desc: "Page with no search or matching controls to verify honest FAILED reporting.",
     icon: XOctagon,
   },
+  {
+    href: "/test-fixtures/challenge",
+    title: "11. Bot Challenge / Access Restriction",
+    desc: "Simulates Google /sorry/ and Cloudflare challenges to verify safe halts without bypass attempts.",
+    icon: ShieldAlert,
+  },
 ];
 
 export default function TestFixturesIndex() {
+  // Test fixtures are isolated from live production execution
+  if (process.env.NODE_ENV === "production") {
+    notFound();
+  }
+
   return (
     <div className="min-h-screen bg-[#F7FAFC] p-8 max-w-5xl mx-auto font-sans">
+      <div className="mb-6 p-4 bg-[#FFF8E7] border border-[#F1DFB5] rounded-lg flex items-start gap-3">
+        <ShieldCheck className="w-5 h-5 text-[#8C6D23] shrink-0 mt-0.5" />
+        <div className="text-xs text-[#8C6D23] space-y-1">
+          <div className="font-semibold">Automated Test Environment Fixtures — Isolated from Live Execution</div>
+          <div>
+            These fixtures exist exclusively for regression testing and CI verification suites. The user-facing agent executes exclusively in Live Mode against real websites and authorized browser resources. Test fixtures cannot be targeted in live execution.
+          </div>
+        </div>
+      </div>
+
       <div className="mb-8">
         <Link href="/" className="text-xs font-semibold text-[#4F8EAD] hover:underline mb-2 inline-block">
           ← Back to Agent Dashboard

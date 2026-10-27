@@ -3,21 +3,29 @@ import { z } from "zod";
 const EnvConfigSchema = z.object({
   // LLM Provider
   LLM_PROVIDER: z.enum(["openai", "anthropic", "gemini", "mock"]).default("openai"),
+  LLM_FALLBACK_PROVIDER: z.enum(["openai", "anthropic", "gemini", "mock", "none"]).default("none"),
   LLM_API_KEY: z.string().default("mock-key"),
   LLM_BASE_URL: z.string().url().default("https://api.openai.com/v1"),
   LLM_MODEL: z.string().default("gpt-4o-mini"),
   LLM_TEMPERATURE: z.coerce.number().min(0).max(1).default(0.0),
   LLM_MAX_TOKENS: z.coerce.number().positive().default(2048),
+  LLM_REQUEST_TIMEOUT_MS: z.coerce.number().positive().default(30000),
+  LLM_MAX_REPAIR_ATTEMPTS: z.coerce.number().int().min(0).max(3).default(1),
+
+  // OpenAI-compatible / Grok Specific Configuration
+  GROK_API_KEY: z.string().optional(),
+  GROK_BASE_URL: z.string().url().optional(),
+  GROK_MODEL: z.string().optional(),
 
   // Gemini Specific Configuration (Official @google/genai SDK)
   GEMINI_API_KEY: z.string().optional(),
   GEMINI_MODEL: z.string().default("gemini-flash-latest"),
 
-  // Browser & Playwright
+  // Browser & Playwright: Headless mode removed — visible browser execution is strictly enforced.
   BROWSER_HEADLESS: z
-    .string()
-    .transform((val) => val === "true" || val === "1")
-    .default("true"),
+    .unknown()
+    .transform(() => false)
+    .default(false),
   BROWSER_SLOW_MO: z.coerce.number().nonnegative().default(0),
   BROWSER_TIMEOUT: z.coerce.number().positive().default(30000),
   NAVIGATION_TIMEOUT: z.coerce.number().positive().default(30000),
@@ -79,6 +87,11 @@ export function getConfig(): AgentConfig {
 
 export function resetConfigForTesting(overrides?: Partial<AgentConfig>): AgentConfig {
   const base = EnvConfigSchema.parse({});
-  cachedConfig = { ...base, ...overrides };
+  const merged = { ...base, ...overrides };
+  // Enforce visible-only execution: BROWSER_HEADLESS cannot be overridden to true
+  if (merged.BROWSER_HEADLESS === true) {
+    merged.BROWSER_HEADLESS = false;
+  }
+  cachedConfig = merged;
   return cachedConfig;
 }

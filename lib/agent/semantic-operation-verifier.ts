@@ -1,3 +1,4 @@
+import fs from "fs";
 import { Action, ActionType, ActionStatus } from "../types/actions";
 import { PageObservation } from "../types/browser";
 import { DownloadedArtifact } from "../types/results";
@@ -23,6 +24,11 @@ export const SEMANTIC_OPERATION_ACTIONS: Record<string, ActionType[]> = {
   close_tab: [ActionType.CLOSE_TAB],
   screenshot: [ActionType.SCREENSHOT],
   assert: [ActionType.ASSERT],
+  media: [ActionType.MEDIA_PLAY, ActionType.MEDIA_PAUSE, ActionType.MEDIA_MUTE, ActionType.CLICK],
+  media_play: [ActionType.MEDIA_PLAY, ActionType.CLICK],
+  play: [ActionType.MEDIA_PLAY, ActionType.CLICK],
+  media_pause: [ActionType.MEDIA_PAUSE, ActionType.CLICK],
+  pause: [ActionType.MEDIA_PAUSE, ActionType.CLICK],
 };
 
 export interface SemanticOperationCheckParams {
@@ -63,6 +69,8 @@ export class SemanticOperationVerifier {
     if (clean.includes("type")) return "type";
     if (clean.includes("click")) return "click";
     if (clean.includes("wait")) return "wait";
+    if (clean.includes("pause")) return "media_pause";
+    if (clean.includes("play")) return "media_play";
     return op.toLowerCase();
   }
 
@@ -111,10 +119,18 @@ export class SemanticOperationVerifier {
         });
 
       case "navigate":
-        return successfulSteps.some((s) => {
-          const sType = String(s.type).toLowerCase();
-          return sType === ActionType.NAVIGATE || sType === ActionType.BACK || sType === ActionType.FORWARD || sType === ActionType.RELOAD;
-        });
+        return (
+          successfulSteps.some((s) => s.actionId?.startsWith("api-")) ||
+          successfulSteps.some((s) => {
+            const sType = String(s.type).toLowerCase();
+            return (
+              sType === ActionType.NAVIGATE ||
+              sType === ActionType.BACK ||
+              sType === ActionType.FORWARD ||
+              sType === ActionType.RELOAD
+            );
+          })
+        );
 
       case "fill":
       case "type":
@@ -122,6 +138,15 @@ export class SemanticOperationVerifier {
           const sType = String(s.type).toLowerCase();
           return sType === ActionType.FILL || sType === ActionType.TYPE || sType === ActionType.SELECT || sType === ActionType.CHECK;
         });
+
+      case "click":
+        return successfulSteps.some((s) => {
+          const sType = String(s.type).toLowerCase();
+          return sType === ActionType.CLICK || sType === ActionType.DOUBLE_CLICK;
+        });
+
+      case "upload":
+        return successfulSteps.some((s) => String(s.type).toLowerCase() === ActionType.UPLOAD.toLowerCase());
 
       case "open_new_tab":
         return successfulSteps.some((s) => String(s.type).toLowerCase() === ActionType.OPEN_NEW_TAB.toLowerCase());
@@ -135,13 +160,28 @@ export class SemanticOperationVerifier {
       case "wait":
         return successfulSteps.some((s) => String(s.type).toLowerCase() === ActionType.WAIT.toLowerCase());
 
-      default:
-        // Generic fallback: check if action type matches canonical valid types or literal name
-        return successfulSteps.some((s) => {
-          const sType = String(s.type).toLowerCase();
-          if (sType === normOp || sType === operation.toLowerCase()) return true;
-          return validActionTypes.some((vat) => vat.toLowerCase() === sType);
+      case "media":
+      case "media_play":
+      case "play":
+        return this.verifyMediaPlayOperation({
+          steps: successfulSteps,
+          observation,
+          extractedData,
         });
+
+      case "media_pause":
+      case "pause":
+        return successfulSteps.some((s) => String(s.type).toLowerCase() === ActionType.MEDIA_PAUSE.toLowerCase());
+
+      case "assert":
+        return successfulSteps.some((s) => String(s.type).toLowerCase() === ActionType.ASSERT.toLowerCase() && s.verified !== false);
+
+      case "screenshot":
+        return successfulSteps.some((s) => String(s.type).toLowerCase() === ActionType.SCREENSHOT.toLowerCase());
+
+      default:
+        // Fail closed: Unknown or unsupported high-level operations cannot be presumed accomplished
+        return false;
     }
   }
 
@@ -228,7 +268,7 @@ export class SemanticOperationVerifier {
    */
   private static checkSubmissionConfirmationInObservation(obs?: PageObservation | null): boolean {
     if (!obs) return false;
-    const CONFIRMATION_TEXT_PATTERN = /(form\s+submitted|submission\s+successful|thank\s+you|successfully\s+submitted|message\s+sent|inquiry\s+received|confirmed)/i;
+    const CONFIRMATION_TEXT_PATTERN = /(form\s+submitted|submission\s+successful|thank\s+you|successfully\s+submitted|message\s+sent|inquiry\s+received|confirmed|correct\s+button\s+clicked)/i;
 
     // Check headings
     if (obs.headings?.some((h) => CONFIRMATION_TEXT_PATTERN.test(h))) {
@@ -245,6 +285,8 @@ export class SemanticOperationVerifier {
       obs.interactiveElements?.some(
         (el) =>
           el.id === "submission-confirmation" ||
+          el.id === "dom-success-message" ||
+          (el.id && /success|confirm/i.test(el.id)) ||
           CONFIRMATION_TEXT_PATTERN.test(String(el.text || "")) ||
           CONFIRMATION_TEXT_PATTERN.test(String(el.name || ""))
       )
@@ -273,6 +315,9 @@ export class SemanticOperationVerifier {
 
     const SEARCH_INDICATOR = /(search|query|find|lookup)/i;
 
+    let queryEntered = false;
+    let submissionTriggered = false;
+
     for (const step of steps) {
       const sType = String(step.type).toLowerCase();
       const plannedAction = planActions?.find((a) => a.id === step.actionId);
@@ -281,31 +326,56 @@ export class SemanticOperationVerifier {
       const reason = String(step.reason || plannedAction?.reason || "");
 
       if (sType === ActionType.FILL || sType === ActionType.TYPE) {
-        if (target?.strategy === "placeholder" || SEARCH_INDICATOR.test(targetVal) || SEARCH_INDICATOR.test(reason)) {
-          return true;
+        if (
+          target?.strategy === "placeholder" ||
+          SEARCH_INDICATOR.test(targetVal) ||
+          SEARCH_INDICATOR.test(reason) ||
+          Boolean(step.value || (step as any).value)
+        ) {
+          queryEntered = true;
         }
       }
 
       if (sType === ActionType.CLICK) {
         if (SEARCH_INDICATOR.test(targetVal) || SEARCH_INDICATOR.test(reason)) {
-          return true;
+          submissionTriggered = true;
         }
       }
 
       if (sType === ActionType.PRESS) {
         const pressKey = String(step.value || plannedAction?.value || "").toLowerCase();
-        if ((pressKey === "enter" || pressKey === "return") && (SEARCH_INDICATOR.test(reason) || SEARCH_INDICATOR.test(targetVal))) {
-          return true;
+        if ((pressKey === "enter" || pressKey === "return") && (SEARCH_INDICATOR.test(reason) || SEARCH_INDICATOR.test(targetVal) || queryEntered)) {
+          submissionTriggered = true;
         }
       }
     }
 
-    // Observed search results state
-    if (observation?.summary && SEARCH_INDICATOR.test(observation.summary)) {
+    if (
+      observation?.url &&
+      (/(\?|&)q=|\/search/i.test(observation.url) || SEARCH_INDICATOR.test(observation.url))
+    ) {
+      submissionTriggered = true;
+    }
+    if (observation?.headings?.some((h) => SEARCH_INDICATOR.test(h))) {
+      submissionTriggered = true;
+    }
+
+    if (queryEntered && submissionTriggered) {
       return true;
     }
 
-    if (extractedData && typeof extractedData === "object" && (Boolean((extractedData as any).title) || Boolean((extractedData as any).products))) {
+    // Observed search results state
+    if (observation?.summary && SEARCH_INDICATOR.test(observation.summary) && (queryEntered || submissionTriggered)) {
+      return true;
+    }
+
+    if (
+      extractedData &&
+      typeof extractedData === "object" &&
+      (Boolean((extractedData as any).products && Array.isArray((extractedData as any).products) && (extractedData as any).products.length > 0) ||
+        Boolean((extractedData as any).results && Array.isArray((extractedData as any).results) && (extractedData as any).results.length > 0) ||
+        Boolean(((extractedData as any).title || (extractedData as any).name) && (extractedData as any).price))
+    ) {
       return true;
     }
 
@@ -343,6 +413,7 @@ export class SemanticOperationVerifier {
 
   /**
    * Semantic verification for "download"
+   * Requires verified downloaded artifact on disk with non-zero size.
    */
   private static verifyDownloadOperation(params: {
     steps: Array<{ type: ActionType | string; downloadPath?: string; target?: any; reason?: string }>;
@@ -351,17 +422,103 @@ export class SemanticOperationVerifier {
   }): boolean {
     const { steps, planActions, downloads } = params;
 
-    // Has verified downloads in context
-    if (downloads && downloads.length > 0 && downloads.some((d) => d.verified)) {
+    // Has verified downloads in context that exist on disk with > 0 bytes
+    if (downloads && downloads.length > 0) {
+      const validDl = downloads.some((d) => {
+        if (!d.verified || d.fileSizeBytes <= 0) return false;
+        try {
+          return fs.existsSync(d.savedPath) && fs.statSync(d.savedPath).size > 0;
+        } catch {
+          return false;
+        }
+      });
+      if (validDl) return true;
+    }
+
+    // Has step with valid downloadPath on disk
+    if (
+      steps.some((s) => {
+        if (!s.downloadPath) return false;
+        try {
+          return fs.existsSync(s.downloadPath) && fs.statSync(s.downloadPath).size > 0;
+        } catch {
+          return false;
+        }
+      })
+    ) {
       return true;
     }
 
-    // Has step with downloadPath
-    if (steps.some((s) => Boolean(s.downloadPath))) {
+    return false;
+  }
+
+  /**
+   * Semantic verification for "media_play" / "play"
+   */
+  private static verifyMediaPlayOperation(params: {
+    steps: Array<{ actionId?: string; type: ActionType | string; extractedData?: unknown; verified?: boolean }>;
+    observation?: PageObservation | null;
+    extractedData?: unknown;
+  }): boolean {
+    const { steps, observation, extractedData } = params;
+    const hasAuthRestrictionNotice = Boolean(
+      observation?.headings?.some((h) => /(?:sign\s*in|log\s*in)\b.*(?:listen|play|full\s*track|lyrics)/i.test(h)) ||
+      (observation?.summary && /(?:sign\s*in|log\s*in)\b.*(?:listen|play|full\s*track|lyrics)/i.test(observation.summary))
+    );
+    if (hasAuthRestrictionNotice) return false;
+
+    const playStep = steps.find((s) => String(s.type).toLowerCase() === ActionType.MEDIA_PLAY.toLowerCase());
+    if (playStep) {
+      if (playStep.extractedData && typeof playStep.extractedData === "object") {
+        const d = playStep.extractedData as any;
+        if (d.isBlocked === true || d.playbackVerified === false || d.isPlaying === false || d.isPaused === true) {
+          return false;
+        }
+        if (d.isPlaying === true && !d.isPaused && (d.playbackVerified === true || d.currentTime > 0)) {
+          return true;
+        }
+      }
+      return playStep.verified === true && (playStep.extractedData as any)?.playbackVerified !== false && (playStep.extractedData as any)?.isBlocked !== true;
+    }
+
+    // Check for standby status extracted from playback-progressing indicator
+    const hasStandbyStep = steps.some(
+      (s) =>
+        s.extractedData === "STANDBY" ||
+        (typeof s.extractedData === "string" && s.extractedData.includes("STANDBY"))
+    );
+    if (hasStandbyStep) {
+      return false;
+    }
+
+    const hasActiveProgression =
+      steps.some(
+        (s) =>
+          s.extractedData === "ACTIVE" ||
+          (typeof s.extractedData === "string" && s.extractedData.includes("ACTIVE"))
+      ) || extractedData === "ACTIVE";
+
+    if (observation?.mediaElements && observation.mediaElements.length > 0) {
+      const playing = observation.mediaElements.some(
+        (m) =>
+          (m.isPlaying || hasActiveProgression) &&
+          !m.isPaused &&
+          !m.error &&
+          !m.isMuted &&
+          (m.currentTime > 0 || hasActiveProgression)
+      );
+      if (playing) return true;
+    }
+
+    if (hasActiveProgression) {
       return true;
     }
 
-    // Completed download action
-    return steps.some((s) => String(s.type).toLowerCase() === ActionType.DOWNLOAD);
+    if (extractedData && typeof extractedData === "object") {
+      const d = extractedData as any;
+      if (d.isPlaying === true && !d.isPaused && d.isBlocked !== true && d.playbackVerified !== false) return true;
+    }
+
+    return false;
   }
 }

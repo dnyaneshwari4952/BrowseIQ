@@ -28,10 +28,28 @@ export default function SearchFixturePage() {
   const [submittedQuery, setSubmittedQuery] = useState("");
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
 
+  React.useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const allQ = params.getAll("q");
+      const activeQ = allQ.filter(Boolean).pop() || params.get("q") || "";
+      if (activeQ) {
+        setSearchTerm(activeQ);
+        setSubmittedQuery(activeQ);
+      }
+    }
+  }, []);
+
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    setSubmittedQuery(searchTerm.trim());
+    const clean = searchTerm.trim();
+    setSubmittedQuery(clean);
     setSelectedProduct(null);
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.set("q", clean);
+      window.history.replaceState({}, "", url.toString());
+    }
   };
 
   const filtered = submittedQuery
@@ -106,7 +124,7 @@ export default function SearchFixturePage() {
             {filtered.map((product, idx) => (
               <div
                 key={product.id}
-                className="bg-[#FFFFFF] border border-[#D9E8EF] rounded-lg p-4 shadow-card hover:border-[#6FA8C5] transition-all flex flex-col justify-between"
+                className="product-card bg-[#FFFFFF] border border-[#D9E8EF] rounded-lg p-4 shadow-card hover:border-[#6FA8C5] transition-all flex flex-col justify-between"
                 data-testid={`product-card-${idx}`}
               >
                 <div>

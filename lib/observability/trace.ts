@@ -1,6 +1,6 @@
 /**
  * Execution Tracing & Event Streaming System
- * Section 24 (Observability) & Section 26 (Streaming Execution)
+ * Section 24 (Observability) & Section 26 (Streaming Execution) & Phase 3 Security Hardening
  */
 
 export const ExecutionEventType = {
@@ -36,6 +36,7 @@ export const ExecutionEventType = {
   FAILED: "FAILED",
   CANCELLED: "CANCELLED",
   TASK_TIMEOUT: "TASK_TIMEOUT",
+  BROWSER_LAUNCHED: "BROWSER_LAUNCHED",
 } as const;
 
 export type ExecutionEventType = (typeof ExecutionEventType)[keyof typeof ExecutionEventType];
@@ -51,6 +52,61 @@ export interface ExecutionEvent {
 
 export type EventListener = (event: ExecutionEvent) => void;
 
+/**
+ * Recursively redacts sensitive API keys, authorization tokens, passwords, and query parameters
+ * from strings, objects, and trace event payloads (Phase 3).
+ */
+export function redactSecrets<T>(data: T): T {
+  if (data === null || data === undefined) return data;
+
+  if (typeof data === "string") {
+    let clean: string = data;
+    // Redact Google AI Studio / Gemini keys
+    clean = clean.replace(/AIzaSy[A-Za-z0-9_-]{20,}/g, "[REDACTED_API_KEY]");
+    // Redact OpenAI / standard bearer keys
+    clean = clean.replace(/sk-[a-zA-Z0-9_-]{20,}/g, "[REDACTED_API_KEY]");
+    // Redact Bearer tokens
+    clean = clean.replace(/Bearer\s+[a-zA-Z0-9_\-\.]{15,}/gi, "Bearer [REDACTED_TOKEN]");
+    // Redact query parameter keys
+    clean = clean.replace(/([?&](?:api[_-]?key|key|token|secret|password)=)[^&\s\r\n]+/gi, "$1[REDACTED]");
+    // Redact basic auth in URLs
+    clean = clean.replace(/(https?:\/\/[^:]+:)[^@]+(@)/gi, "$1[REDACTED]$2");
+    return clean as unknown as T;
+  }
+
+  if (Array.isArray(data)) {
+    return data.map((item) => redactSecrets(item)) as unknown as T;
+  }
+
+  if (typeof data === "object") {
+    const copy: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+      const lowerKey = key.toLowerCase();
+      if (
+        lowerKey.includes("key") ||
+        lowerKey.includes("secret") ||
+        lowerKey.includes("token") ||
+        lowerKey.includes("password") ||
+        lowerKey.includes("auth") ||
+        lowerKey.includes("bearer") ||
+        lowerKey.includes("cookie") ||
+        lowerKey.includes("credential")
+      ) {
+        if (typeof value === "string") {
+          copy[key] = "[REDACTED]";
+        } else {
+          copy[key] = redactSecrets(value);
+        }
+      } else {
+        copy[key] = redactSecrets(value);
+      }
+    }
+    return copy as unknown as T;
+  }
+
+  return data;
+}
+
 export class ExecutionTracer {
   private taskId: string;
   private events: ExecutionEvent[] = [];
@@ -63,13 +119,16 @@ export class ExecutionTracer {
   }
 
   emit(type: ExecutionEventType, message: string, data?: Record<string, unknown>): ExecutionEvent {
+    const sanitizedMessage = redactSecrets(message);
+    const sanitizedData = data ? (redactSecrets(data) as Record<string, unknown>) : undefined;
+
     const event: ExecutionEvent = {
       id: `${this.taskId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       taskId: this.taskId,
       type,
       timestamp: new Date().toISOString(),
-      message,
-      data,
+      message: sanitizedMessage,
+      data: sanitizedData,
     };
 
     this.events.push(event);

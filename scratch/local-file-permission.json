@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "accessMode": "whole_computer",
+  "wholeComputerConfirmed": true,
+  "approvedDirectories": [
+    "D:\\Browser Automation Agent\\scratch\\wc-test-1793122001136\\Downloads"
+  ],
+  "approvedDirectory": "D:\\Browser Automation Agent\\scratch\\wc-test-1793122001136\\Downloads"
+}

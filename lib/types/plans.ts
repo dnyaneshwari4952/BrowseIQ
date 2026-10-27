@@ -48,6 +48,8 @@ export const PlanSchema = z.object({
     fallbackAvailable: false,
   }).optional(),
   revision: z.number().int().nonnegative().default(0).optional(),
+  taskSpec: z.any().optional(),
+  status: z.enum(["active", "cancelled", "completed", "failed"]).optional(),
 });
 
 export type Plan = z.infer<typeof PlanSchema>;
@@ -83,13 +85,28 @@ export const TaskIntentSchema = z.object({
     "OPEN_TAB",
     "DYNAMIC_WAIT_AND_EXTRACT",
     "EXTRACT",
+    "CONTENT_INSPECT",
+    "NAVIGATION",
+    "CLICK_ELEMENT",
+    "MEDIA_PLAY",
+    "LOCAL_MEDIA_PLAY",
     "AMBIGUOUS_ACTION",
     "DESTRUCTIVE_UNSUPPORTED",
     "PROMPT_INJECTION_DEFENSE",
   ]),
+  taskScope: z.enum(["website", "local_file", "mixed"]).default("website").optional(),
+  localFileDetails: z
+    .object({
+      targetTitle: z.string().optional(),
+      targetDirectoryType: z.enum(["downloads", "documents", "music", "desktop", "videos", "whole_computer", "custom", "unknown"]).optional(),
+      explicitPath: z.string().optional(),
+      mediaType: z.enum(["audio", "video", "image", "document", "any"]).default("audio").optional(),
+    })
+    .optional(),
   rawTask: z.string(),
   entity: z.string().optional(),
   query: z.string().optional(),
+  windowLimit: z.number().int().positive().optional(),
   comparison: z
     .object({
       operation: z.enum(["MIN", "MAX", "COUNT", "FILTER", "SORT"]),

@@ -17,6 +17,7 @@ export interface LocatorResolutionResult {
   locator: Locator;
   strategyUsed: (typeof LocatorStrategy)[keyof typeof LocatorStrategy];
   confidence: number;
+  reason?: string;
   allCandidates: ScoredCandidate[];
 }
 
@@ -41,6 +42,7 @@ export class LocatorEngine {
    */
   static async resolve(page: Page, target: ElementTarget, timeoutMs = 5000): Promise<LocatorResolutionResult> {
     const candidates: ScoredCandidate[] = [];
+    const root = target.container ? page.locator(target.container) : page;
 
     // Helper to evaluate a locator candidate
     const evaluateCandidate = async (
@@ -53,19 +55,40 @@ export class LocatorEngine {
         const totalCount = await locator.count();
         if (totalCount === 0) return;
 
-        // Filter for visible elements to eliminate hidden duplicates (e.g. <input type="hidden" name="q">)
-        const visibleLocator = locator.filter({ visible: true });
+        // Check element visibility directly to safely eliminate hidden duplicates
         let visibleCount = 0;
-        try {
-          visibleCount = await visibleLocator.count();
-        } catch {
-          visibleCount = 0;
+        let firstVisibleIndex = -1;
+        const countToCheck = Math.min(totalCount, 10);
+        for (let i = 0; i < countToCheck; i++) {
+          try {
+            if (await locator.nth(i).isVisible()) {
+              visibleCount++;
+              if (firstVisibleIndex === -1) firstVisibleIndex = i;
+            }
+          } catch {
+            // Detached or obscured
+          }
         }
 
         const isVisible = visibleCount > 0;
-        // If visible matches exist, scope the candidate locator to visible elements.
-        // Otherwise retain raw locator so downstream validator can diagnose ELEMENT_NOT_VISIBLE accurately.
-        const effectiveLocator = isVisible ? visibleLocator : locator;
+        // If visible matches exist and hidden duplicates are present, scope to visible elements
+        let effectiveLocator = locator;
+        if (isVisible && visibleCount < totalCount && firstVisibleIndex !== -1) {
+          if (visibleCount === 1) {
+            effectiveLocator = locator.nth(firstVisibleIndex);
+          } else {
+            try {
+              const visLoc = page.locator(`${selector}:visible`);
+              if ((await visLoc.count()) > 0) {
+                effectiveLocator = visLoc;
+              } else {
+                effectiveLocator = locator.nth(firstVisibleIndex);
+              }
+            } catch {
+              effectiveLocator = locator.nth(firstVisibleIndex);
+            }
+          }
+        }
 
         let enabled = true;
         try {
@@ -75,6 +98,14 @@ export class LocatorEngine {
         }
 
         let score = baseScore;
+        // Strongly favor explicitly requested strategy
+        if (
+          target.strategy &&
+          (target.strategy === strategy || target.strategy.toLowerCase() === strategy.toLowerCase())
+        ) {
+          score += 50;
+        }
+
         // Boost unambiguous visible matches; penalize genuine visible ambiguity
         if (visibleCount === 1) {
           score += 15; // Strongly favor single visible element even if hidden DOM duplicates exist
@@ -108,13 +139,13 @@ export class LocatorEngine {
     if (target.role || target.strategy === LocatorStrategy.ROLE) {
       const role = target.role || "button";
       const name = target.name || target.value;
-      const loc = page.getByRole(role as any, { name, exact: target.exact });
+      const loc = (root as any).getByRole(role as any, { name, exact: target.exact });
       await evaluateCandidate(LocatorStrategy.ROLE, `role=${role}[name="${name}"]`, loc, 100);
     }
 
     // 2. Associated Form Label
     if (target.strategy === LocatorStrategy.LABEL || target.value) {
-      const loc = page.getByLabel(target.value, { exact: target.exact });
+      const loc = (root as any).getByLabel(target.value, { exact: target.exact });
       await evaluateCandidate(LocatorStrategy.LABEL, `label="${target.value}"`, loc, 90);
     }
 
@@ -122,61 +153,87 @@ export class LocatorEngine {
     if (target.strategy === LocatorStrategy.PLACEHOLDER || target.value) {
       try {
         const cleanPlaceholder = target.value.replace(/\.+$/, "").trim();
-        const loc = page.getByPlaceholder(new RegExp(cleanPlaceholder, "i"));
+        const loc = (root as any).getByPlaceholder(new RegExp(cleanPlaceholder, "i"));
         await evaluateCandidate(LocatorStrategy.PLACEHOLDER, `placeholder=~/${cleanPlaceholder}/i`, loc, 80);
       } catch {
-        const loc = page.getByPlaceholder(target.value, { exact: false });
+        const loc = (root as any).getByPlaceholder(target.value, { exact: false });
         await evaluateCandidate(LocatorStrategy.PLACEHOLDER, `placeholder="${target.value}"`, loc, 80);
       }
     }
 
     // Contextual Search input fallback
-    if (target.value?.toLowerCase().includes("search") || target.role === "searchbox") {
-      const searchLoc = page.locator(
-        'input[type="search"], input[name*="search" i], input[placeholder*="search" i], input[aria-label*="search" i]'
+    if (
+      target.value?.toLowerCase().includes("search") ||
+      target.value?.toLowerCase().includes("play") ||
+      target.role === "searchbox"
+    ) {
+      const searchLoc = root.locator(
+        'input[type="search"], input[data-testid*="search" i], input[role="searchbox"], input[placeholder*="play" i], input[placeholder*="search" i], input[name*="search" i], input[name="search_query"], input[name="q"], input[aria-label*="search" i], input[aria-label*="play" i], textarea[aria-label*="search" i]'
       );
       await evaluateCandidate(LocatorStrategy.CSS, 'input[search]', searchLoc, 78);
     }
 
-    // 4. Visible Text Content
+    // 4. Explicit Accessible Attributes (aria-label, title) (Section 2, Tier 4)
+    if (target.strategy === LocatorStrategy.ACCESSIBLE_ATTR || target.value) {
+      const escaped = target.value.replace(/"/g, '\\"');
+      const ariaLoc = root.locator(`[aria-label="${escaped}" i], [title="${escaped}" i]`);
+      await evaluateCandidate(LocatorStrategy.ACCESSIBLE_ATTR, `[aria-label="${escaped}"]`, ariaLoc, 75);
+    }
+
+    // 5. Visible Text Content
     if (target.strategy === LocatorStrategy.TEXT || target.value) {
-      const loc = page.getByText(target.value, { exact: target.exact });
+      const loc = (root as any).getByText(target.value, { exact: target.exact });
       await evaluateCandidate(LocatorStrategy.TEXT, `text="${target.value}"`, loc, 70);
     }
 
     // 5. Stable data-testid Attribute
     if (target.strategy === LocatorStrategy.TEST_ID || target.value) {
-      const loc = page.getByTestId(target.value);
+      const loc = (root as any).getByTestId(target.value);
       await evaluateCandidate(LocatorStrategy.TEST_ID, `data-testid="${target.value}"`, loc, 65);
     }
 
     // 6. Name Attribute
     if (target.strategy === LocatorStrategy.NAME || target.value) {
       const escaped = target.value.replace(/"/g, '\\"');
-      const loc = page.locator(`[name="${escaped}"]`);
+      const loc = root.locator(`[name="${escaped}"]`);
       await evaluateCandidate(LocatorStrategy.NAME, `[name="${escaped}"]`, loc, 60);
     }
 
-    // 7. Stable ID (Reject auto-generated/dynamic IDs with random digits)
+    // 7. Stable ID (Reject auto-generated/dynamic IDs with random digits or synthetic prefix)
     if (target.strategy === LocatorStrategy.ID || target.value) {
       const val = target.value.startsWith("#") ? target.value.slice(1) : target.value;
-      const isDynamic = /^[a-z0-9_-]*\d{6,}[a-z0-9_-]*$/i.test(val);
+      const isDynamic = /^[a-z0-9_-]*\d{6,}[a-z0-9_-]*$/i.test(val) || val.startsWith("elem-");
       if (!isDynamic) {
-        const loc = page.locator(`#${val}`);
+        const loc = root.locator(`#${val}`);
         await evaluateCandidate(LocatorStrategy.ID, `#${val}`, loc, 50);
       }
     }
 
     // 8. CSS Selector
     if (target.strategy === LocatorStrategy.CSS) {
-      const loc = page.locator(target.value);
+      const loc = root.locator(target.value);
       await evaluateCandidate(LocatorStrategy.CSS, target.value, loc, 40);
     }
 
     // 9. XPath (Last resort)
     if (target.strategy === LocatorStrategy.XPATH || target.value.startsWith("//")) {
-      const loc = page.locator(`xpath=${target.value}`);
+      const loc = root.locator(`xpath=${target.value}`);
       await evaluateCandidate(LocatorStrategy.XPATH, target.value, loc, 30);
+    }
+
+    // Progressive fallback query if priority evaluators found 0 candidates
+    if (candidates.length === 0 && target.value) {
+      try {
+        const cleanVal = target.value.trim();
+        const roleCandidate = (root as any).getByRole("button", { name: new RegExp(cleanVal, "i") });
+        await evaluateCandidate(LocatorStrategy.ROLE, `role=button[name=~/${cleanVal}/i]`, roleCandidate, 85);
+        if (candidates.length === 0) {
+          const textCandidate = (root as any).getByText(new RegExp(cleanVal, "i"));
+          await evaluateCandidate(LocatorStrategy.TEXT, `text=~/${cleanVal}/i`, textCandidate, 70);
+        }
+      } catch {
+        // Fallback query
+      }
     }
 
     // If no candidate matched at all
@@ -204,6 +261,7 @@ export class LocatorEngine {
           locator: resolvedLoc,
           strategyUsed: uniqueCandidate.strategy,
           confidence: Number((uniqueCandidate.score / 120).toFixed(2)),
+          reason: `Resolved via unambiguous unique visible alternative strategy '${uniqueCandidate.strategy}'`,
           allCandidates: candidates,
         };
       }
@@ -226,6 +284,7 @@ export class LocatorEngine {
           locator: resolvedLoc,
           strategyUsed: visibleCandidate.strategy,
           confidence: Number((visibleCandidate.score / 120).toFixed(2)),
+          reason: `Resolved via visible candidate strategy '${visibleCandidate.strategy}' over hidden higher-priority matches`,
           allCandidates: candidates,
         };
       }
@@ -238,7 +297,23 @@ export class LocatorEngine {
       locator: resolvedLocator,
       strategyUsed: best.strategy,
       confidence: Number(Math.min(1.0, best.score / 120).toFixed(2)),
+      reason: `Resolved via strategy '${best.strategy}' with ${best.visibleCount} visible match(es) (score ${best.score})`,
       allCandidates: candidates,
     };
+  }
+
+  /**
+   * Validates whether a previously resolved locator is still attached, visible, and actionable.
+   * If stale or detached, returns false, signaling that fresh page observations are required.
+   */
+  static async isLocatorFresh(locator?: Locator, timeoutMs = 1000): Promise<boolean> {
+    if (!locator) return false;
+    try {
+      const count = await locator.count();
+      if (count === 0) return false;
+      return await locator.first().isVisible({ timeout: timeoutMs });
+    } catch {
+      return false;
+    }
   }
 }
