@@ -178,6 +178,7 @@ export function taskSessionReducer(
     case "APPEND_EVENT":
       return {
         ...state,
+        activeTaskId: state.activeTaskId || action.payload.taskId,
         events: [...state.events, action.payload],
       };
 
@@ -196,6 +197,7 @@ export function taskSessionReducer(
     case "SET_BROWSER_WINDOW":
       return {
         ...state,
+        activeTaskId: state.activeTaskId || action.payload.taskId,
         browserWindow: action.payload,
       };
 

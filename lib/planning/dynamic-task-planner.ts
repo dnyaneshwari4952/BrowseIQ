@@ -132,45 +132,57 @@ export class DynamicTaskPlanner {
         const searchInputTarget = this.resolveSearchInputLocator(observation);
         const searchBtnTarget = this.resolveSearchButtonLocator(observation);
 
-        actions.push({
-          id: `step-${actions.length + 1}-wait-input`,
-          type: ActionType.WAIT,
-          value: 400,
-          risk: RiskLevel.LOW,
-          reason: "Wait for search interface to settle",
-        });
+        // Only fill and submit search if an explicit query was provided
+        if (query && query.trim()) {
+          actions.push({
+            id: `step-${actions.length + 1}-wait-input`,
+            type: ActionType.WAIT,
+            value: 400,
+            risk: RiskLevel.LOW,
+            reason: "Wait for search interface to settle",
+          });
 
-        actions.push({
-          id: `step-${actions.length + 1}-fill-search`,
-          type: ActionType.FILL,
-          target: searchInputTarget,
-          value: query,
-          risk: RiskLevel.LOW,
-          reason: `Enter search query '${query}' into search field`,
-          retries: { maxRetries: 2, backoffMs: 400 },
-        });
+          actions.push({
+            id: `step-${actions.length + 1}-fill-search`,
+            type: ActionType.FILL,
+            target: searchInputTarget,
+            value: query,
+            risk: RiskLevel.LOW,
+            reason: `Enter search query '${query}' into search field`,
+            retries: { maxRetries: 2, backoffMs: 400 },
+          });
 
-        // Submit search either by clicking search button (default) or pressing Enter
-        actions.push({
-          id: `step-${actions.length + 1}-click-search`,
-          type: ActionType.CLICK,
-          target: searchBtnTarget || {
-            strategy: "css",
-            value: "button[type='submit'], input[type='submit'], button:has-text('Search'), button:has-text('Find')",
-          },
-          risk: RiskLevel.LOW,
-          reason: "Click search button to submit search",
-          retries: { maxRetries: 2, backoffMs: 400 },
-        });
+          // Submit search either by clicking search button (default) or pressing Enter
+          actions.push({
+            id: `step-${actions.length + 1}-click-search`,
+            type: ActionType.CLICK,
+            target: searchBtnTarget || {
+              strategy: "css",
+              value: "button[type='submit'], input[type='submit'], button:has-text('Search'), button:has-text('Find')",
+            },
+            risk: RiskLevel.LOW,
+            reason: "Click search button to submit search",
+            retries: { maxRetries: 2, backoffMs: 400 },
+          });
 
-        // Wait for results
-        actions.push({
-          id: `step-${actions.length + 1}-wait-results`,
-          type: ActionType.WAIT,
-          value: 2000,
-          risk: RiskLevel.LOW,
-          reason: "Wait for search results to load",
-        });
+          // Wait for results
+          actions.push({
+            id: `step-${actions.length + 1}-wait-results`,
+            type: ActionType.WAIT,
+            value: 2000,
+            risk: RiskLevel.LOW,
+            reason: "Wait for search results to load",
+          });
+        } else {
+          // If no query string needed to be entered, allow initial catalog to settle
+          actions.push({
+            id: `step-${actions.length + 1}-wait-catalog`,
+            type: ActionType.WAIT,
+            value: 800,
+            risk: RiskLevel.LOW,
+            reason: "Wait for catalog items on current page to settle",
+          });
+        }
 
         // Check if an explicit open action was requested (e.g. "Open the second matching result and extract its title" or "open the article result")
         const shouldOpenResult =

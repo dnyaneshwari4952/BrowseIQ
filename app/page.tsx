@@ -141,9 +141,14 @@ export default function DashboardPage() {
       abortControllerRef.current = null;
     }
 
-    // 3. Atomically reset all task session state variables
+    // 3. Inform backend to halt task execution and free browser locks if task was active
+    if (session.activeTaskId) {
+      fetch(`/api/agent?taskId=${encodeURIComponent(session.activeTaskId)}&closeWindow=true`, { method: "DELETE" }).catch(() => {});
+    }
+
+    // 4. Atomically reset all task session state variables
     dispatch({ type: "RESET_SESSION" });
-  }, []);
+  }, [session.activeTaskId]);
 
   const handleRunTask = async (task: string, targetUrl?: string) => {
     // Abort previous run if any
