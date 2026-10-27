@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Browser Automation Agent | Production Autonomous Controller",
+  title: "BrowseIQ | Production Autonomous Browser Controller",
   description:
-    "Production-grade intelligent browser automation agent with structured planning, deterministic execution, pre-execution guardrails, verification, and self-healing.",
+    "BrowseIQ — Production-grade intelligent browser automation agent with structured planning, deterministic Playwright execution, pre-execution guardrails, AI-assisted planning, verification, and self-healing.",
 };
 
 export default function RootLayout({

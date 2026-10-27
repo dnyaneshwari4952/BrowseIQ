@@ -1,6 +1,6 @@
-# Browser Automation Agent
+# BrowseIQ
 
-An enterprise-grade, deterministic, and autonomous browser automation agent built with **Next.js 15**, **TypeScript**, and **Playwright**. The agent understands natural-language tasks, derives structured action plans with task-level success criteria, inspects live browser states, performs pre-execution validation, selectively routes to direct APIs or browser automation, executes deterministically, verifies both individual actions and overarching task outcomes, and recovers from dynamic DOM shifts.
+An enterprise-grade, deterministic, and autonomous browser automation agent built with **Next.js 15**, **TypeScript**, and **Playwright**. BrowseIQ understands natural-language tasks, derives structured action plans with task-level success criteria, inspects live browser states, performs pre-execution validation, selectively routes to direct APIs or browser automation, executes deterministically, verifies both individual actions and overarching task outcomes, and recovers from dynamic DOM shifts.
 
 ---
 
@@ -136,8 +136,8 @@ browser-automation-agent/
 ### Installation
 ```bash
 # Clone the repository
-git clone <repository-url>
-cd "Browser Automation Agent"
+git clone https://github.com/dnyaneshwari4952/BrowseIQ.git
+cd BrowseIQ
 
 # Install dependencies
 npm install

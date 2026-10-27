@@ -338,7 +338,7 @@ export default function DashboardPage() {
           </div>
           <div>
             <h1 className="text-sm font-bold tracking-tight text-[#24485A] flex items-center gap-2">
-              Browser Automation Agent
+              BrowseIQ
               <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-[#EEF6FB] text-[#24485A] border border-[#D9E8EF]">
                 v1.0
               </span>
@@ -657,7 +657,7 @@ export default function DashboardPage() {
             <Terminal className="w-3.5 h-3.5 text-[#4F8EAD]" /> Playwright Chromium
           </span>
         </div>
-        <div className="text-[#667784]">Browser Automation Agent • Fourth Internship Project</div>
+        <div className="text-[#667784]">BrowseIQ • Fourth Internship Project</div>
       </footer>
 
       {/* Settings Modal */}

@@ -1,7 +1,7 @@
 # Mentor Viva Preparation & Technical Deep-Dive
-## Browser Automation Agent — Comprehensive Engineering Reference
+## BrowseIQ — Comprehensive Engineering Reference
 
-This document provides technically rigorous, production-grade answers to mentor viva and architecture questions regarding the **Browser Automation Agent**. Every explanation directly reflects the **actual runtime implementation** in this codebase.
+This document provides technically rigorous, production-grade answers to mentor viva and architecture questions regarding **BrowseIQ**. Every explanation directly reflects the **actual runtime implementation** in this codebase.
 
 ---
 
