@@ -677,21 +677,21 @@ describe("PHASE 3: Independent Verification, Security Hardening, Observability a
       expect(() => UrlPolicy.validate("file:///etc/passwd")).toThrow(/Unsupported or dangerous URL scheme/);
     });
 
-    it("redacts Gemini API keys, Bearer tokens, and secrets from reports and traces", () => {
+    it("redacts Google AI / Bearer tokens, and secrets from reports and traces", () => {
       const sensitivePayload = {
         taskId: "task-test-sec",
         reportType: "Execution Audit",
-        apiKey: "AIzaSyDa98fakeGeminiKeyForTesting12345678",
+        apiKey: "AIzaSyDa98fakeApiKeyForTesting12345678",
         authHeader: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.dummysecretkey",
         connectionString: "https://admin:mySuperSecretPassword@db.example.com",
-        userNotes: "Using key AIzaSyDa98fakeGeminiKeyForTesting12345678 for verification",
+        userNotes: "Using key AIzaSyDa98fakeApiKeyForTesting12345678 for verification",
       };
 
       const redacted = redactSecrets(sensitivePayload) as typeof sensitivePayload;
 
       expect(redacted.apiKey).toBe("[REDACTED]");
       expect(redacted.authHeader).toBe("[REDACTED]");
-      expect(redacted.userNotes).not.toContain("AIzaSyDa98fakeGeminiKeyForTesting12345678");
+      expect(redacted.userNotes).not.toContain("AIzaSyDa98fakeApiKeyForTesting12345678");
       expect(redacted.userNotes).toContain("[REDACTED_API_KEY]");
       expect(redacted.connectionString).toContain("[REDACTED]");
       expect(redacted.connectionString).not.toContain("mySuperSecretPassword");

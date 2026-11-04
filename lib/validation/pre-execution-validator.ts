@@ -174,6 +174,7 @@ export class PreExecutionValidator {
     if (
       action.type === ActionType.NAVIGATE ||
       action.type === ActionType.WAIT ||
+      action.type === ActionType.SCROLL ||
       action.type === ActionType.BACK ||
       action.type === ActionType.FORWARD ||
       action.type === ActionType.RELOAD ||

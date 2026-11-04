@@ -271,7 +271,7 @@ describe("Clear Button — Reset the Entire Task Session", () => {
       approvedDirectory: "D:/MyAllowedFiles",
     };
 
-    const operatingMode = "gemini_assisted";
+    const operatingMode = "playwright";
 
     let state = taskSessionReducer(INITIAL_TASK_SESSION_STATE, {
       type: "START_TASK",
@@ -289,7 +289,7 @@ describe("Clear Button — Reset the Entire Task Session", () => {
     expect(userSettings.maxRetries).toBe(5);
     expect(userSettings.approvedDirectory).toBe("D:/MyAllowedFiles");
     expect(userSettings.localFilesEnabled).toBe(true);
-    expect(operatingMode).toBe("gemini_assisted");
+    expect(operatingMode).toBe("playwright");
 
     // Task state is clean
     expect(cleared.agentState).toBe(AgentState.IDLE);

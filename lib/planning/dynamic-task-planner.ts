@@ -290,12 +290,18 @@ export class DynamicTaskPlanner {
               ? customName
               : this.getDefaultValueForField(fieldKey);
 
+            const hasRealId = Boolean(inputEl.id && !inputEl.id.startsWith("elem-"));
+            const strat = hasRealId ? ("id" as const) : inputEl.name ? ("name" as const) : inputEl.placeholder ? ("placeholder" as const) : ("css" as const);
+            const targetVal = hasRealId
+              ? inputEl.id!
+              : inputEl.name || inputEl.placeholder || "input[type='text'], input:not([type='hidden'])";
+
             actions.push({
-              id: `step-${actions.length + 1}-fill-${inputEl.id || inputEl.name || "field"}`,
+              id: `step-${actions.length + 1}-fill-${inputEl.name || inputEl.placeholder || "field"}`,
               type: ActionType.FILL,
               target: {
-                strategy: inputEl.id ? "id" : inputEl.name ? "name" : "placeholder",
-                value: inputEl.id || inputEl.name || inputEl.placeholder || "",
+                strategy: strat,
+                value: targetVal,
               },
               value: val,
               risk: RiskLevel.LOW,
@@ -773,12 +779,27 @@ export class DynamicTaskPlanner {
       }
 
       default: {
-        actions.push({
-          id: `step-${actions.length + 1}-inspect`,
-          type: ActionType.INSPECT,
-          risk: RiskLevel.LOW,
-          reason: "Inspect page state",
-        });
+        const clickMatch = spec.originalInstruction.match(/(?:and\s+)?(?:click|follow|tap|press)\s+(?:the\s+)?['"]?([^'"\n.,]+?)['"]?\s*(?:link|button)?$/i);
+        if (clickMatch && !spec.negations.some((n) => n.forbidden && (n.operation as any) === "click")) {
+          const clickTarget = clickMatch[1].trim();
+          actions.push({
+            id: `step-${actions.length + 1}-click-link`,
+            type: ActionType.CLICK,
+            target: {
+              strategy: "text",
+              value: clickTarget,
+            },
+            risk: RiskLevel.LOW,
+            reason: `Click '${clickTarget}' link or button as requested in instruction`,
+          });
+        } else {
+          actions.push({
+            id: `step-${actions.length + 1}-inspect`,
+            type: ActionType.INSPECT,
+            risk: RiskLevel.LOW,
+            reason: "Inspect page state",
+          });
+        }
         break;
       }
     }
@@ -894,6 +915,16 @@ export class DynamicTaskPlanner {
       );
       if (match && match.text) {
         return { strategy: "role" as const, value: match.text, role: "button" };
+      }
+
+      const actionBtn = obs.interactiveElements.find(
+        (el) =>
+          (el.tagName === "BUTTON" || el.type === "submit" || el.role === "button") &&
+          !el.text?.toLowerCase().includes("version") &&
+          Boolean(el.text?.trim())
+      );
+      if (actionBtn && actionBtn.text) {
+        return { strategy: "role" as const, value: actionBtn.text.trim(), role: "button" };
       }
     }
     return { strategy: "role" as const, value: "Submit", role: "button" };

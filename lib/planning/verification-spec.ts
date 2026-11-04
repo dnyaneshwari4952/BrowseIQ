@@ -208,6 +208,22 @@ export class VerificationSpecBuilder {
         });
         break;
 
+      case "EXTRACT": {
+        const shouldOpen = /\bopen\b/i.test(spec.originalInstruction) && !spec.negations.some((n) => n.operation === "open" && n.forbidden);
+        if (shouldOpen) {
+          requiredOperations.push("click");
+        }
+        requiredOperations.push("extract");
+        requiredOutputs.push("title");
+        verificationChecks.push("contentExtracted");
+        criteria.push({
+          id: "crit-extract",
+          description: "Target text or information extracted from page",
+          type: "OUTPUT_EXTRACTED",
+        });
+        break;
+      }
+
       case "AMBIGUOUS":
       case "UNSUPPORTED":
         // No success criteria can be satisfied for ambiguous or unsupported requests

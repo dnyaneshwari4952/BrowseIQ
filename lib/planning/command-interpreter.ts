@@ -108,7 +108,7 @@ export class CommandInterpreter {
       operation: "OPEN_TAB",
       canonicalVerb: "open_tab",
       patterns: [
-        /\b(?:open\s+(?:in\s+)?(?:a\s+)?new\s+tab|open\s+tab|new\s+tab|multi-tab|open\s+another\s+tab)\b/i,
+        /\b(?:open\s+(?:in\s+)?(?:a\s+)?(?:new|target)?\s*tab|open\s+tab|new\s+tab|multi-tab|open\s+another\s+tab|open\s+target\s+tab\s+link|switch\s+context)\b/i,
       ],
       coreKeywords: ["newtab", "opentab", "tab"],
     },

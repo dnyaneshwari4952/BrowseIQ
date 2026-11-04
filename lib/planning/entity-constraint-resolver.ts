@@ -28,12 +28,14 @@ export class EntityConstraintResolver {
   // Destructive / High-risk keywords
   private static readonly DESTRUCTIVE_PATTERNS = [
     /\b(?:delete|purge|wipe|drop)\s+(?:all\s+)?(?:users?|database|tables?|records?|files?)\b/i,
+    /\b(?:format\s+(?:hard\s+drive|[a-zA-Z]:)|delete\s+all\s+files|wipe\s+disk)\b/i,
     /\b(?:transfer\s+money|wire\s+funds|drain\s+account|delete\s+bank\s+account)\b/i,
   ];
 
   // Unsupported desktop operations or external non-browser transactions
   private static readonly UNSUPPORTED_DESKTOP_PATTERNS = [
-    /\b(?:install\s+(?:app|software|exe|program)|run\s+terminal\s+as\s+root|reboot\s+pc|shutdown\s+computer)\b/i,
+    /\b(?:install\s+[a-zA-Z0-9_\-.]+|install\s+(?:app|software|exe|program)|run\s+terminal\s+as\s+root|reboot\s+pc|shutdown\s+computer)\b/i,
+    /\b(?:run|execute)\s+(?:a\s+)?(?:host\s+)?(?:operating\s+system|os|terminal|powershell|cmd|bash)\s+script\b/i,
     /\b(?:book\s+a\s+flight|reserve\s+hotel|book\s+a\s+hotel|call\s+uber|order\s+taxi|book\s+train)\b/i,
   ];
 
@@ -135,8 +137,8 @@ export class EntityConstraintResolver {
       ambiguityReason = "Multiple identical submit buttons found on current page.";
       clarificationQuestion = "Found multiple 'Submit' buttons on this page. Please specify which form or button to submit.";
     } else if (
-      /\b(?:somewhere|search\s+for\s+something|find\s+something|do\s+something)\b/i.test(lower) ||
-      (!targetEntity && !searchQuery && !targetUrl && command.operationType === "SEARCH")
+      /\b(?:somewhere|search\s+for\s+something|find\s+something|do\s+something|search\s+for\s+that\s+item|open\s+it|click\s+it|buy\s+something)\b/i.test(lower) ||
+      (!targetEntity && !searchQuery && !targetUrl && (command.operationType === "SEARCH" || /^(?:search|open|buy|click)\b/i.test(lower)))
     ) {
       isAmbiguous = true;
       ambiguityReason = "User instruction is missing specific target search terms or destination.";
@@ -344,15 +346,21 @@ export class EntityConstraintResolver {
     lower = lower.replace(/^(?:open|go\s+to|visit|browse|navigate\s+to)\s+[a-zA-Z0-9.-]+\s+and\s+/i, "");
 
     const IGNORED = new Set([
+      "all", "any", "every", "both", "each",
       "something", "somewhere", "anything", "everything",
       "product", "products", "item", "items", "results", "result",
       "page", "website", "catalog", "site", "details", "contact",
       "cost", "price", "pair", "one", "form",
+      "find", "search", "open", "click", "filter", "sort", "extract",
+      "show", "get", "query", "look", "view", "watch", "play", "run",
+      "browse", "visit", "navigate",
+      "under", "below", "above", "over", "between", "on", "in", "at",
+      "from", "with", "without", "into", "onto", "per", "than", "more", "less",
     ]);
 
     // 2. Check for action verb anywhere in sentence (handles conversational preambles)
     const actionSearchMatch = lower.match(
-      /(?:search(?:\s+for)?|look\s+for|look\s+up|query(?:\s+for)?|find|locate|view(?:\s+the)?|play|stream|listen(?:\s+to)?|watch)\s+(?:a|an|the|this|that|all)?\s*([a-zA-Z0-9_\-'\s]+?)(?=[.?!]|\b(?:on|in|at|under|below|above|over|between|priced|costing|with|without|that|which|and\s+report|and\s+sort|and\s+tell)\b|$)/i
+      /(?:search(?:\s+for)?|look\s+for|look\s+up|query(?:\s+for)?|find|locate|view(?:\s+the)?|play|stream|listen(?:\s+to)?|watch)\s+(?:a\b|an\b|the\b|this\b|that\b|all\b)?\s*([a-zA-Z0-9_\-'\s]+?)(?=[.?!]|\b(?:on|in|at|under|below|above|over|between|priced|costing|with|without|that|which|and\s+report|and\s+sort|and\s+tell)\b|$)/i
     );
     if (actionSearchMatch) {
       let candidate = actionSearchMatch[1].replace(/[.,!?;:]+$/, "").trim();
@@ -404,8 +412,8 @@ export class EntityConstraintResolver {
       return cleaned;
     }
 
-    // Fallback: Check extracted keywords
-    const candidateKeyword = command.extractedKeywords.find((k) => !IGNORED.has(k.toLowerCase()));
+    // Fallback: Check extracted keywords (exclude numbers/currencies)
+    const candidateKeyword = command.extractedKeywords.find((k) => !IGNORED.has(k.toLowerCase()) && !/^[$₹€£]?\d/.test(k));
     return candidateKeyword || undefined;
   }
 
@@ -424,19 +432,32 @@ export class EntityConstraintResolver {
 
     // 2. Extract specific search query phrase following search verbs
     const searchVerbMatch = instruction.match(
-      /(?:search(?:\s+for)?|look\s+for|look\s+up|query(?:\s+for)?|find)\s+(?:a|an|the|this|that|all)?\s*([a-zA-Z0-9_\-'\s]+?)(?=[.?!]|\b(?:on|in|at|under|below|above|over|between|priced|costing|with|without|that|which|but|and\s+report|and\s+sort|and\s+tell|and\s+show|and\s+display|and\s+extract|and\s+get|and\s+return)\b|$)/i
+      /(?:search(?:\s+for)?|look\s+for|look\s+up|query(?:\s+for)?|find)\s+(?:a\b|an\b|the\b|this\b|that\b|all\b)?\s*([a-zA-Z0-9_\-'\s]+?)(?=[.?!]|\b(?:on|in|at|under|below|above|over|between|priced|costing|with|without|that|which|but|and\s+report|and\s+sort|and\s+tell|and\s+show|and\s+display|and\s+extract|and\s+get|and\s+return|and\s+fall\s+back)\b|$)/i
     );
+
+    const IGNORED = new Set([
+      "all", "any", "every", "both", "each",
+      "something", "somewhere", "anything", "everything",
+      "product", "products", "item", "items", "results", "result",
+      "page", "website", "catalog", "site", "details", "contact",
+      "cost", "price", "pair", "one", "form",
+      "find", "search", "open", "click", "filter", "sort", "extract",
+      "show", "get", "query", "look", "view", "watch", "play", "run",
+      "browse", "visit", "navigate",
+      "under", "below", "above", "over", "between", "on", "in", "at",
+      "from", "with", "without", "into", "onto", "per", "than", "more", "less",
+    ]);
 
     if (searchVerbMatch) {
       let rawQuery = searchVerbMatch[1].replace(/[.,!?;:]+$/, "").trim();
       // Strip comparative/ordering words from query (e.g. "cheapest mobile phones" -> "mobile phones")
       rawQuery = rawQuery.replace(/^(?:a|an|the|this|that|all|listed|available|cheapest|priciest|lowest-priced|lowest|most|least|expensive|best|top|second-cheapest|second|third|fourth|fifth|eligible|matching|pair\s+of)\s+/i, "").trim();
-      if (rawQuery && rawQuery.length >= 2 && !["something", "somewhere", "anything", "product", "item"].includes(rawQuery.toLowerCase())) {
+      if (rawQuery && rawQuery.length >= 2 && !IGNORED.has(rawQuery.toLowerCase())) {
         return rawQuery;
       }
     }
 
-    if (entity) {
+    if (entity && !IGNORED.has(entity.toLowerCase())) {
       const artistMatch = instruction.match(/\bby\s+([a-zA-Z0-9_\-\s]+?)(?=\s+\b(?:on|in|at|from|via)\b|[.,!?;:]|$)/i);
       if (artistMatch) {
         const artist = artistMatch[1].trim();
@@ -445,8 +466,7 @@ export class EntityConstraintResolver {
       return entity;
     }
 
-    const IGNORED = new Set(["something", "somewhere", "anything", "product", "item"]);
-    const validKeywords = command.extractedKeywords.filter((k) => !IGNORED.has(k.toLowerCase()));
+    const validKeywords = command.extractedKeywords.filter((k) => !IGNORED.has(k.toLowerCase()) && !/^[$₹€£]?\d/.test(k));
     if (validKeywords.length > 0) {
       return validKeywords.slice(0, 3).join(" ");
     }

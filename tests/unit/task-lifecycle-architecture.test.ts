@@ -354,7 +354,6 @@ describe("PHASE 1: Vector-Inspired Architecture, Dynamic Planning, and Task Life
       expect(plan).toBeDefined();
       expect(plan.actions.length).toBeGreaterThan(0);
       expect(plan.planningMetadata?.operatingMode).toBe("playwright");
-      expect(plan.planningMetadata?.geminiInvoked).toBe(false);
       expect(plan.planningMetadata?.planSource).toBe("deterministic");
 
       // Verify actions contain enriched Vector-inspired attributes

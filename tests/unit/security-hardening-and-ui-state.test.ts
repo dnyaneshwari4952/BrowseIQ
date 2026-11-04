@@ -213,7 +213,7 @@ describe("Phase 3 — Security Hardening, Mock Integrity, UI State and Diagnosti
 
   // 12. API key redaction in errors
   it("12. API key redaction in errors: redacts API keys and bearer tokens from error messages", () => {
-    const errorWithKey = "Gemini API call failed: request to https://generativelanguage.googleapis.com?key=AIzaSyDfakeApiKeySecret1234567890123 failed";
+    const errorWithKey = "API call failed: request to https://generativelanguage.googleapis.com?key=AIzaSyDfakeApiKeySecret1234567890123 failed";
     const redacted = redactSecrets(errorWithKey);
 
     expect(redacted).not.toContain("AIzaSyDfakeApiKeySecret1234567890123");
@@ -246,7 +246,7 @@ describe("Phase 3 — Security Hardening, Mock Integrity, UI State and Diagnosti
   // 14. Unknown provider not silently becoming mock
   it("14. Unknown provider not silently becoming mock: throws CONFIG_ERROR when unknown provider is requested", () => {
     expect(() => buildProviderInstance("anthropic-claude", false)).toThrow(/Unknown LLM provider 'anthropic-claude'/);
-    expect(() => buildProviderInstance("foo-bar", false)).toThrow(/Supported providers are: gemini, openai, mock/);
+    expect(() => buildProviderInstance("foo-bar", false)).toThrow(/Supported providers are: openai, mock/);
   });
 
   // 15. Mock target URL extraction

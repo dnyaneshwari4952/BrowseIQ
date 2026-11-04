@@ -37,6 +37,7 @@ export const ExecutionEventType = {
   CANCELLED: "CANCELLED",
   TASK_TIMEOUT: "TASK_TIMEOUT",
   BROWSER_LAUNCHED: "BROWSER_LAUNCHED",
+  MEDIA_PLAYBACK_STATUS: "MEDIA_PLAYBACK_STATUS",
 } as const;
 
 export type ExecutionEventType = (typeof ExecutionEventType)[keyof typeof ExecutionEventType];
@@ -61,7 +62,7 @@ export function redactSecrets<T>(data: T): T {
 
   if (typeof data === "string") {
     let clean: string = data;
-    // Redact Google AI Studio / Gemini keys
+    // Redact Google AI Studio / API keys
     clean = clean.replace(/AIzaSy[A-Za-z0-9_-]{20,}/g, "[REDACTED_API_KEY]");
     // Redact OpenAI / standard bearer keys
     clean = clean.replace(/sk-[a-zA-Z0-9_-]{20,}/g, "[REDACTED_API_KEY]");

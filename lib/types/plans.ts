@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ActionSchema } from "./actions";
+import { OperatingMode } from "./operating-mode";
 
 /**
  * Route decision between API and Browser automation (Section 11 & 12)
@@ -50,6 +51,7 @@ export const PlanSchema = z.object({
   revision: z.number().int().nonnegative().default(0).optional(),
   taskSpec: z.any().optional(),
   status: z.enum(["active", "cancelled", "completed", "failed"]).optional(),
+  planningMetadata: z.custom<PlanningMetadata>().optional(),
 });
 
 export type Plan = z.infer<typeof PlanSchema>;
@@ -164,3 +166,15 @@ export const AgentState = {
 } as const;
 
 export type AgentState = (typeof AgentState)[keyof typeof AgentState];
+
+/**
+ * Plan metadata that records what planning path was taken.
+ * Attached to the ExecutionContext for observability.
+ */
+export interface PlanningMetadata {
+  operatingMode: OperatingMode;
+  deterministicConfidenceScore?: number;
+  planSource: "deterministic" | "custom_llm";
+  planValidationOutcome: "accepted" | "rejected";
+  planValidationIssues?: string[];
+}

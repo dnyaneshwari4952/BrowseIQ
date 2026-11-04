@@ -5,6 +5,13 @@ export const metadata: Metadata = {
   title: "BrowseIQ | Production Autonomous Browser Controller",
   description:
     "BrowseIQ — Production-grade intelligent browser automation agent with structured planning, deterministic Playwright execution, pre-execution guardrails, AI-assisted planning, verification, and self-healing.",
+  icons: {
+    icon: [
+      { url: "/icon.png", sizes: "512x512", type: "image/png" },
+      { url: "/favicon.ico", sizes: "any" },
+    ],
+    apple: "/icon.png",
+  },
 };
 
 export default function RootLayout({

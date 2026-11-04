@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
 import {
-  GeminiProvider,
   OpenAICompatibleProvider,
   MockProvider,
   ProviderOrchestrator,
@@ -11,7 +10,6 @@ import { Planner } from "@/lib/agent/planner";
 import { ErrorCode, AgentError } from "@/lib/types/errors";
 import { ActionType, RiskLevel } from "@/lib/types/actions";
 import { resetConfigForTesting } from "@/lib/config";
-import type { GoogleGenAI } from "@google/genai";
 
 const validPlanJson = JSON.stringify({
   taskIntent: "Search for laptop and extract first result",
@@ -47,14 +45,15 @@ const validPlanJson = JSON.stringify({
 });
 
 describe("Phase 1 — Provider Reliability, Fallback Architecture, and Planner Hardening", () => {
-  // Test 1: Gemini Success
-  it("1. Gemini success: produces validated plan when Gemini responds normally", async () => {
-    const mockGenerateContent = vi.fn().mockResolvedValue({
-      text: validPlanJson,
-      usageMetadata: { promptTokenCount: 50, candidatesTokenCount: 100 },
-    });
-    const mockClient = { models: { generateContent: mockGenerateContent } } as unknown as GoogleGenAI;
-    const provider = new GeminiProvider("mock-key", "gemini-flash-latest", mockClient);
+  // Test 1: Provider Success
+  it("1. Provider success: produces validated plan when provider responds normally", async () => {
+    const provider: LLMProvider = {
+      name: "test-provider",
+      generate: vi.fn().mockResolvedValue({
+        content: validPlanJson,
+        usage: { promptTokens: 50, completionTokens: 100 },
+      }),
+    };
     const planner = new Planner(provider);
 
     const plan = await planner.plan({
@@ -67,16 +66,14 @@ describe("Phase 1 — Provider Reliability, Fallback Architecture, and Planner H
     expect(plan.actions[0].type).toBe(ActionType.NAVIGATE);
   });
 
-  // Test 2: Gemini 429 with configured fallback success
-  it("2. Gemini 429 with configured fallback success: switches to fallback provider", async () => {
-    const mockClient = {
-      models: {
-        generateContent: vi.fn().mockRejectedValue(
-          new Error("429 RESOURCE_EXHAUSTED: Quota exceeded for quota metric 'Generate Content API'")
-        ),
-      },
-    } as unknown as GoogleGenAI;
-    const primary = new GeminiProvider("mock-key", "gemini-flash-latest", mockClient);
+  // Test 2: Provider 429 with configured fallback success
+  it("2. Provider 429 with configured fallback success: switches to fallback provider", async () => {
+    const primary: LLMProvider = {
+      name: "primary-provider",
+      generate: vi.fn().mockRejectedValue(
+        new AgentError("Rate limit exceeded", ErrorCode.RATE_LIMITED, false, undefined, "primary-provider", 429)
+      ),
+    };
     const fallback = new MockProvider();
     const orchestrator = new ProviderOrchestrator({ primary, fallback });
     const planner = new Planner(orchestrator);
@@ -90,16 +87,14 @@ describe("Phase 1 — Provider Reliability, Fallback Architecture, and Planner H
     expect(plan.actions.length).toBeGreaterThan(0);
   });
 
-  // Test 3: Gemini 429 without fallback
-  it("3. Gemini 429 without fallback: retains RATE_LIMITED error code and does NOT mislabel as VALIDATION_FAILED", async () => {
-    const mockClient = {
-      models: {
-        generateContent: vi.fn().mockRejectedValue(
-          new Error("429 RESOURCE_EXHAUSTED: Rate limit exceeded")
-        ),
-      },
-    } as unknown as GoogleGenAI;
-    const primary = new GeminiProvider("mock-key", "gemini-flash-latest", mockClient);
+  // Test 3: Provider 429 without fallback
+  it("3. Provider 429 without fallback: retains RATE_LIMITED error code and does NOT mislabel as VALIDATION_FAILED", async () => {
+    const primary: LLMProvider = {
+      name: "primary-provider",
+      generate: vi.fn().mockRejectedValue(
+        new AgentError("Rate limit exceeded", ErrorCode.RATE_LIMITED, false, undefined, "primary-provider", 429)
+      ),
+    };
     const orchestrator = new ProviderOrchestrator({ primary });
     const planner = new Planner(orchestrator);
 
@@ -115,40 +110,37 @@ describe("Phase 1 — Provider Reliability, Fallback Architecture, and Planner H
       expect(agentErr.code).toBe(ErrorCode.RATE_LIMITED);
       expect(agentErr.code).not.toBe(ErrorCode.VALIDATION_FAILED);
       expect(agentErr.retryable).toBe(false);
-      expect(agentErr.provider).toBe("gemini");
+      expect(agentErr.provider).toBe("primary-provider");
     }
   });
 
-  // Test 4: Gemini 503 with bounded recovery
-  it("4. Gemini 503 with bounded recovery: retries on model candidate and succeeds", async () => {
-    const mockGenerateContent = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("503 UNAVAILABLE: The service is temporarily experiencing high demand."))
-      .mockResolvedValueOnce({
-        text: validPlanJson,
-        usageMetadata: { promptTokenCount: 60, candidatesTokenCount: 120 },
-      });
-    const mockClient = { models: { generateContent: mockGenerateContent } } as unknown as GoogleGenAI;
-    const provider = new GeminiProvider("mock-key", "gemini-flash-latest", mockClient);
-    const planner = new Planner(provider);
+  // Test 4: Temporary 503 with bounded recovery
+  it("4. Temporary 503 with bounded recovery: switches to fallback provider and succeeds", async () => {
+    const primary: LLMProvider = {
+      name: "primary-provider",
+      generate: vi.fn().mockRejectedValue(
+        new AgentError("503 Service Unavailable", ErrorCode.TEMPORARY_UNAVAILABLE, true, undefined, "primary-provider", 503)
+      ),
+    };
+    const fallback = new MockProvider();
+    const orchestrator = new ProviderOrchestrator({ primary, fallback });
+    const planner = new Planner(orchestrator);
 
     const plan = await planner.plan({
-      task: "Search for laptop",
+      task: "Search for laptop and extract the first product",
       targetUrl: "http://localhost:3000/test-fixtures/search",
     });
 
     expect(plan).toBeDefined();
-    expect(mockGenerateContent).toHaveBeenCalledTimes(2);
+    expect(plan.actions.length).toBeGreaterThan(0);
   });
 
   // Test 5: Both primary and fallback providers failing
   it("5. Both primary and fallback providers failing: reports structured composite failure", async () => {
-    const mockClient = {
-      models: {
-        generateContent: vi.fn().mockRejectedValue(new Error("429 RESOURCE_EXHAUSTED")),
-      },
-    } as unknown as GoogleGenAI;
-    const primary = new GeminiProvider("mock-key", "gemini-flash-latest", mockClient);
+    const primary: LLMProvider = {
+      name: "primary-provider",
+      generate: vi.fn().mockRejectedValue(new AgentError("Rate limit", ErrorCode.RATE_LIMITED, false)),
+    };
 
     const failingFallback: LLMProvider = {
       name: "failing-fallback",
@@ -179,13 +171,6 @@ describe("Phase 1 — Provider Reliability, Fallback Architecture, and Planner H
 
   // Test 7: Missing API key
   it("7. Missing API key: throws CONFIG_ERROR when instantiated with empty or placeholder key", () => {
-    expect(() => new GeminiProvider("")).toThrow(AgentError);
-    try {
-      new GeminiProvider("");
-    } catch (err) {
-      expect((err as AgentError).code).toBe(ErrorCode.CONFIG_ERROR);
-    }
-
     expect(() => new OpenAICompatibleProvider("")).toThrow(AgentError);
     try {
       new OpenAICompatibleProvider("");
@@ -195,13 +180,11 @@ describe("Phase 1 — Provider Reliability, Fallback Architecture, and Planner H
   });
 
   // Test 8: Authentication and permission errors
-  it("8. Authentication and permission errors: maps HTTP 401 and 403 to AUTH_REQUIRED or PERMISSION_ERROR", async () => {
-    const mockClient = {
-      models: {
-        generateContent: vi.fn().mockRejectedValue(new Error("401 PERMISSION_DENIED: Invalid API Key")),
-      },
-    } as unknown as GoogleGenAI;
-    const provider = new GeminiProvider("mock-key", "gemini-flash-latest", mockClient);
+  it("8. Authentication and permission errors: OpenAICompatibleProvider maps HTTP 401 and 403 to AUTH_REQUIRED or PERMISSION_ERROR", async () => {
+    const provider = new OpenAICompatibleProvider("test-key", "https://api.openai.com/v1", "gpt-4o-mini");
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { message: "Invalid API key" } }), { status: 401 })
+    );
 
     try {
       await provider.generate("test");
@@ -209,17 +192,17 @@ describe("Phase 1 — Provider Reliability, Fallback Architecture, and Planner H
     } catch (err) {
       expect(err).toBeInstanceOf(AgentError);
       expect((err as AgentError).code).toBe(ErrorCode.AUTH_REQUIRED);
+    } finally {
+      vi.restoreAllMocks();
     }
   });
 
   // Test 9: Invalid model/404
-  it("9. Invalid model/404: maps 404 to MODEL_NOT_FOUND", async () => {
-    const mockClient = {
-      models: {
-        generateContent: vi.fn().mockRejectedValue(new Error("404 NOT_FOUND: Model 'gemini-nonexistent' not found")),
-      },
-    } as unknown as GoogleGenAI;
-    const provider = new GeminiProvider("mock-key", "gemini-nonexistent", mockClient);
+  it("9. Invalid model/404: OpenAICompatibleProvider maps 404 to MODEL_NOT_FOUND", async () => {
+    const provider = new OpenAICompatibleProvider("test-key", "https://api.openai.com/v1", "nonexistent-model");
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { message: "Model not found" } }), { status: 404 })
+    );
 
     try {
       await provider.generate("test");
@@ -227,6 +210,8 @@ describe("Phase 1 — Provider Reliability, Fallback Architecture, and Planner H
     } catch (err) {
       expect(err).toBeInstanceOf(AgentError);
       expect((err as AgentError).code).toBe(ErrorCode.MODEL_NOT_FOUND);
+    } finally {
+      vi.restoreAllMocks();
     }
   });
 
@@ -335,12 +320,10 @@ describe("Phase 1 — Provider Reliability, Fallback Architecture, and Planner H
 
   // Test 16: Fallback provider returning an invalid plan
   it("16. Fallback provider returning an invalid plan: fails schema validation strictly", async () => {
-    const mockClient = {
-      models: {
-        generateContent: vi.fn().mockRejectedValue(new Error("429 RESOURCE_EXHAUSTED")),
-      },
-    } as unknown as GoogleGenAI;
-    const primary = new GeminiProvider("mock-key", "gemini-flash-latest", mockClient);
+    const primary: LLMProvider = {
+      name: "primary-provider",
+      generate: vi.fn().mockRejectedValue(new AgentError("Rate limit", ErrorCode.RATE_LIMITED, false)),
+    };
 
     const invalidFallback: LLMProvider = {
       name: "invalid-fallback",
@@ -454,16 +437,11 @@ describe("Phase 1 — Provider Reliability, Fallback Architecture, and Planner H
 
   // Test 20: Secret redaction in errors and logs
   it("20. Secret redaction in errors and logs: redacts secret API keys from error messages", async () => {
-    const sensitiveKey = "AIzaSy_SENSITIVE_SECRET_TOKEN_999";
-    const mockClient = {
-      models: {
-        generateContent: vi.fn().mockRejectedValue(
-          new Error(`Failed request to https://generativelanguage.googleapis.com/v1beta/models?key=${sensitiveKey}`)
-        ),
-      },
-    } as unknown as GoogleGenAI;
-
-    const provider = new GeminiProvider(sensitiveKey, "gemini-flash-latest", mockClient);
+    const sensitiveKey = "sk-SENSITIVE_SECRET_TOKEN_9999999999999999";
+    const provider = new OpenAICompatibleProvider(sensitiveKey, "https://api.openai.com/v1", "gpt-4o-mini");
+    vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(
+      new Error(`Failed request with Bearer ${sensitiveKey}`)
+    );
 
     try {
       await provider.generate("test");
@@ -473,6 +451,8 @@ describe("Phase 1 — Provider Reliability, Fallback Architecture, and Planner H
       const msg = (err as AgentError).message;
       expect(msg).not.toContain(sensitiveKey);
       expect(msg).toContain("[REDACTED");
+    } finally {
+      vi.restoreAllMocks();
     }
   });
 });

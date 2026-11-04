@@ -20,7 +20,7 @@ import {
 import { DownloadedArtifact, TaskVerificationResult, RecoveryAttemptRecord } from "@/lib/types/results";
 import { redactSecrets } from "@/lib/observability/trace";
 import { ModeBadge } from "@/components/mode-switch";
-import type { PlanningMetadata } from "@/lib/agent/gemini-planning-interface";
+import type { PlanningMetadata } from "@/lib/types/plans";
 
 export interface ResultPanelProps {
   status?:
@@ -194,10 +194,8 @@ export function ResultPanel({
             Live Browser
           </span>
 
-          {/* Planning mode badge: shows whether Gemini was actually used for this task */}
           <ModeBadge
             operatingMode={planningMetadata?.operatingMode}
-            geminiInvoked={planningMetadata?.geminiInvoked}
           />
         </div>
 

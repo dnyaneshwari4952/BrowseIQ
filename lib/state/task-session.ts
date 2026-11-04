@@ -1,8 +1,7 @@
-import { AgentState, Plan } from "@/lib/types/plans";
+import { AgentState, Plan, PlanningMetadata } from "@/lib/types/plans";
 import { PageObservation, BrowserTab } from "@/lib/types/browser";
 import { ExecutionEvent } from "@/lib/observability/trace";
 import { DownloadedArtifact, ExecutionContext, TaskVerificationResult, RecoveryAttemptRecord } from "@/lib/types/results";
-import type { PlanningMetadata } from "@/lib/agent/gemini-planning-interface";
 
 export interface TaskSessionState {
   taskPrompt: string;

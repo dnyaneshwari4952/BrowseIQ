@@ -1,8 +1,7 @@
 import { Action, ActionExecutionResult, ElementTarget } from "./actions";
 import { BrowserTab, PageObservation } from "./browser";
-import { AgentState, Plan, RouteDecision } from "./plans";
+import { AgentState, Plan, RouteDecision, PlanningMetadata } from "./plans";
 import { OperatingMode } from "./operating-mode";
-import type { PlanningMetadata } from "../agent/gemini-planning-interface";
 
 /**
  * Immutable record of an individual recovery attempt (Section 4)
@@ -40,6 +39,7 @@ export interface DownloadedArtifact {
  */
 export interface ExecutionContext {
   taskId: string;
+  executionId?: string;
   originalTask: string;
   targetUrl?: string;
   mode?: "live" | "test";
@@ -87,8 +87,20 @@ export interface ExecutionContext {
     | "blocked";
   statusMessage?: string;
   taskVerification?: TaskVerificationResult;
+  mediaPlayback?: {
+    status: "idle" | "loading" | "buffering" | "playing" | "paused" | "ended" | "blocked" | "error";
+    taskId?: string;
+    executionId?: string;
+    currentTime?: number;
+    duration?: number;
+    isAdPlaying?: boolean;
+    adCount?: number;
+    error?: string | null;
+    verified?: boolean;
+    updatedAt?: string;
+  };
   latestObservation?: PageObservation | null;
-  /** Planning observability: records deterministic vs Gemini-assisted planning path. */
+  /** Planning observability: records planning path and metadata. */
   planningMetadata?: PlanningMetadata;
   /** Structured constraints extracted during task understanding phase */
   taskConstraints?: Record<string, unknown>;

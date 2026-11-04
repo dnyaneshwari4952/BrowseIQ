@@ -7,8 +7,7 @@ import { z } from "zod";
  * All browser tasks (navigation, clicking, typing, extraction, forms, downloads, media)
  * execute exclusively via Playwright.
  *
- * AI models (Gemini / Grok) assist with natural language task planning and reasoning
- * where configured, but do not constitute a separate execution mode.
+ * Deterministic planning and reasoning drives Playwright execution.
  */
 export const OperatingModeSchema = z.enum(["playwright"]);
 export type OperatingMode = z.infer<typeof OperatingModeSchema>;
@@ -23,7 +22,7 @@ export const OPERATING_MODE_LABELS: Record<OperatingMode, string> = {
 /** Short tooltip descriptions */
 export const OPERATING_MODE_DESCRIPTIONS: Record<OperatingMode, string> = {
   playwright:
-    "Playwright is the single browser execution engine. Live browser execution with AI planning where configured.",
+    "Playwright is the single browser execution engine. Live browser execution with deterministic planning.",
 };
 
 /**
@@ -41,7 +40,7 @@ export function parseOperatingMode(raw: unknown): OperatingMode {
 
 /**
  * Safe coercion that returns the single supported execution mode ("playwright").
- * Safely migrates legacy stored preferences (e.g. "gemini_assisted") or missing values to "playwright".
+ * Safely migrates legacy stored preferences or missing values to "playwright".
  */
 export function coerceOperatingMode(raw?: unknown): OperatingMode {
   return "playwright";

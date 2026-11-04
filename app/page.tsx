@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useReducer, useCallback } from "react";
-import { Bot, Sliders, ShieldCheck, Activity, Terminal, ChevronDown, ChevronUp, Layers, Compass, Zap, AlertTriangle } from "lucide-react";
+import Image from "next/image";
+import { Sliders, ShieldCheck, Activity, Terminal, ChevronDown, ChevronUp, Layers, Compass, Zap, AlertTriangle } from "lucide-react";
 import { TaskInput } from "@/components/task-input";
 import { ExecutionPanel } from "@/components/execution-panel";
 import { PlanViewer } from "@/components/plan-viewer";
@@ -70,7 +71,7 @@ export default function DashboardPage() {
       .then((data) => {
         const isHealthy = data.status === "healthy";
         setSystemHealthy(isHealthy);
-        const prov = data.system?.llmProvider || data.components?.primaryProvider?.name || "gemini";
+        const prov = data.system?.llmProvider || data.components?.primaryProvider?.name || "openai";
         setProviderInfo({
           provider: prov.charAt(0).toUpperCase() + prov.slice(1),
           isLive: prov !== "mock",
@@ -88,14 +89,12 @@ export default function DashboardPage() {
           });
         }
 
-        if (isHealthy) {
+        if (isHealthy || (data.status === "degraded" && data.components?.primaryProvider?.status === "missing_credentials" && data.system?.displayAvailable !== false)) {
+          setSystemHealthy(true);
           setEngineHealthText("Engine Online");
         } else if (data.status === "degraded") {
-          const providerStatus = data.components?.primaryProvider?.status;
           if (data.system?.displayAvailable === false || limitation) {
             setEngineHealthText("Degraded: No Graphical Display");
-          } else if (providerStatus === "missing_credentials") {
-            setEngineHealthText("Degraded: Missing API Key");
           } else {
             setEngineHealthText("Degraded: Config Warning");
           }
@@ -337,17 +336,24 @@ export default function DashboardPage() {
     <div className="min-h-screen bg-[#FFFFFF] text-[#1F2933] flex flex-col font-sans">
       {/* Top Navigation Header (Part 33) */}
       <header className="border-b border-[#D9E8EF] bg-[#FFFFFF] sticky top-0 z-40 px-6 py-3.5 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-[#EEF6FB] border border-[#D9E8EF] flex items-center justify-center text-[#4F8EAD]">
-            <Bot className="w-4 h-4" />
+        <div className="flex items-center gap-3.5">
+          <div className="flex items-center shrink-0">
+            <Image
+              src="/logo.png"
+              alt="BrowseIQ Logo"
+              width={140}
+              height={42}
+              className="h-10 w-auto object-contain"
+              priority
+              unoptimized
+            />
           </div>
-          <div>
-            <h1 className="text-sm font-bold tracking-tight text-[#24485A] flex items-center gap-2">
-              BrowseIQ
-              <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-[#EEF6FB] text-[#24485A] border border-[#D9E8EF]">
+          <div className="border-l border-[#D9E8EF] pl-3">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-[#EEF6FB] text-[#24485A] border border-[#D9E8EF]">
                 v1.0
               </span>
-            </h1>
+            </div>
             <p className="text-xs text-[#667784]">Describe a task and let the agent complete it.</p>
           </div>
         </div>

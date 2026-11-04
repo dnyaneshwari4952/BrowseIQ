@@ -41,11 +41,6 @@ export async function GET() {
     };
 
     // 3. Primary Provider Configuration (Does not make paid external call on health poll)
-    const isGeminiConfigured = Boolean(
-      config.GEMINI_API_KEY &&
-      config.GEMINI_API_KEY !== "your_gemini_api_key_here" &&
-      !config.GEMINI_API_KEY.includes("mock")
-    );
     const isOpenAiConfigured = Boolean(
       config.LLM_API_KEY &&
       config.LLM_API_KEY !== "your_api_key_here" &&
@@ -53,9 +48,7 @@ export async function GET() {
     );
 
     let primaryConfigured = false;
-    if (config.LLM_PROVIDER === "gemini") {
-      primaryConfigured = isGeminiConfigured;
-    } else if (config.LLM_PROVIDER === "openai") {
+    if (config.LLM_PROVIDER === "openai") {
       primaryConfigured = isOpenAiConfigured;
     } else if (config.LLM_PROVIDER === "mock") {
       primaryConfigured = config.NODE_ENV !== "production";
@@ -70,7 +63,6 @@ export async function GET() {
     // 4. Fallback Provider Configuration
     const fallbackName = config.LLM_FALLBACK_PROVIDER || "none";
     const fallbackConfigured = fallbackName !== "none" && (
-      (fallbackName === "gemini" && isGeminiConfigured) ||
       (fallbackName === "openai" && isOpenAiConfigured) ||
       (fallbackName === "mock" && config.NODE_ENV !== "production")
     );
@@ -87,10 +79,11 @@ export async function GET() {
       endpointCount: registeredEndpoints.length,
     };
 
-    // Overall Service Health: requires valid provider config AND graphical display capability
+    // Overall Service Health: BrowseIQ uses Playwright with Deterministic Planning as its core automation engine.
+    // External AI providers are optional. As long as display capability and browser readiness are verified, the service is healthy.
     const isHealthy =
-      (primaryConfigured || config.NODE_ENV === "test" || config.LLM_PROVIDER === "mock") &&
-      displayEnv.hasDisplay;
+      (displayEnv.hasDisplay || config.NODE_ENV === "test") &&
+      processHealth.status === "ready";
 
     return NextResponse.json({
       status: isHealthy ? "healthy" : "degraded",

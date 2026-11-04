@@ -6,7 +6,6 @@ import { buildProviderInstance, createLLMProvider, MockProvider } from "@/lib/ai
 import { resetConfigForTesting } from "@/lib/config";
 import { AgentError, ErrorCode } from "@/lib/types/errors";
 import { Planner } from "@/lib/agent/planner";
-import { GeminiPlanningInterface } from "@/lib/agent/gemini-planning-interface";
 import { ChallengeDetector } from "@/lib/browser/challenge-detector";
 import { TaskVerifier } from "@/lib/agent/task-verifier";
 import { PageObservation } from "@/lib/types/browser";
@@ -107,8 +106,8 @@ describe("Live Mode Enforcement & Test Mode Removal", () => {
     it("createLLMProvider throws if LLM_FALLBACK_PROVIDER is set to 'mock'", () => {
       resetConfigForTesting({
         NODE_ENV: "test",
-        LLM_PROVIDER: "gemini",
-        GEMINI_API_KEY: "valid-test-key-1234567890",
+        LLM_PROVIDER: "openai",
+        LLM_API_KEY: "valid-test-key-1234567890",
         LLM_FALLBACK_PROVIDER: "mock" as any,
       });
 
@@ -268,42 +267,31 @@ describe("Live Mode Enforcement & Test Mode Removal", () => {
     });
   });
 
-  // ─── 5. Gemini & Playwright Mode Interaction in Live Execution ───────────────
+  // ─── 5. Deterministic Planning & Playwright Execution in Live Mode ───────────────
 
-  describe("5. Gemini & Playwright Mode Separation in Live Execution", () => {
-    it("Playwright mode never invokes Gemini and relies on deterministic planning + Playwright execution", async () => {
-      const geminiSpy = vi.spyOn(GeminiPlanningInterface.prototype, "requestPlan");
-      vi.spyOn(GeminiPlanningInterface, "isConfigured").mockReturnValue(true);
-
-      const planner = new Planner(new MockProvider());
+  describe("5. Deterministic Planning & Playwright Execution in Live Mode", () => {
+    it("Playwright mode relies on deterministic planning + Playwright execution", async () => {
+      const planner = new Planner();
       const plan = await planner.plan({
         task: "Search for laptops and sort by price ascending",
         operatingMode: "playwright",
       });
 
-      expect(geminiSpy).not.toHaveBeenCalled();
+      expect(plan.actions.length).toBeGreaterThan(0);
       expect(plan.planningMetadata?.operatingMode).toBe("playwright");
-      expect(plan.planningMetadata?.geminiInvoked).toBe(false);
       expect(plan.planningMetadata?.planSource).toBe("deterministic");
     });
 
-    it("Gemini-Assisted mode preserves operating mode on error and never silently switches providers", async () => {
-      vi.spyOn(GeminiPlanningInterface, "isConfigured").mockReturnValue(true);
-      vi.spyOn(GeminiPlanningInterface.prototype, "requestPlan").mockRejectedValue(
-        new AgentError("Gemini quota exhausted", ErrorCode.API_ERROR, false, undefined, "gemini")
-      );
+    it("legacy coerced mode safely executes with deterministic planning", async () => {
+      const planner = new Planner();
+      const plan = await planner.plan({
+        task: "Search for laptops",
+        operatingMode: "gemini_assisted",
+      });
 
-      const planner = new Planner(new MockProvider());
-
-      // Task with sequential conjunctions triggers low deterministic confidence
-      const complexTask = "First open page, then search laptops, and then compare specs, and finally export CSV";
-
-      await expect(
-        planner.plan({
-          task: complexTask,
-          operatingMode: "gemini_assisted",
-        })
-      ).rejects.toThrow(/Gemini-Assisted planning failed/i);
+      expect(plan.actions.length).toBeGreaterThan(0);
+      expect(plan.planningMetadata?.operatingMode).toBe("playwright");
+      expect(plan.planningMetadata?.planSource).toBe("deterministic");
     });
   });
 });

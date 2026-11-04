@@ -25,7 +25,15 @@ import { ChallengeDetector } from "../browser/challenge-detector";
 import { ApiRouter } from "../api/api-router";
 import { validateUrlString } from "../validation/url-policy";
 import { logger } from "../observability/logger";
-import { TaskLifecycleState, assertValidTaskTransition } from "./task-lifecycle";
+import {
+  TaskLifecycleState,
+  assertValidTaskTransition,
+  TERMINAL_STATES,
+  MediaPlaybackStatus,
+  MediaPlaybackManager,
+  MediaPlaybackEvent,
+  ProcessPlaybackEventResult,
+} from "./task-lifecycle";
 import { OperatingMode, DEFAULT_OPERATING_MODE, coerceOperatingMode } from "../types/operating-mode";
 import { EntityConstraintResolver } from "../planning/entity-constraint-resolver";
 
@@ -168,6 +176,8 @@ export class AgentLoop {
     const effectiveActionTimeout = Math.min(60000, Math.max(1000, settings?.actionTimeout ?? config.DEFAULT_ACTION_TIMEOUT));
 
     const taskId = options.taskId || `task-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const executionId = `exec-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const mediaManager = new MediaPlaybackManager(taskId, executionId);
     const startTime = new Date().toISOString();
     const startMs = Date.now();
 
@@ -198,9 +208,16 @@ export class AgentLoop {
     let currentLifecycle: TaskLifecycleState = TaskLifecycleState.QUEUED;
 
     const emitLifecycle = (nextLifecycle: TaskLifecycleState, stepIndex = 0, actionName?: string) => {
+      // If already in a terminal state, late lifecycle transitions must not throw or revert active state
+      if (TERMINAL_STATES.has(currentLifecycle)) {
+        logger.info(`[AgentLoop] Stale lifecycle transition attempt from terminal state '${currentLifecycle}' to '${nextLifecycle}' safely ignored.`);
+        return;
+      }
+
       // If transitioning to a terminal success/partial/failure state and not yet reported, emit FINAL_REPORT first
       if (
         (nextLifecycle === TaskLifecycleState.SUCCESS ||
+          nextLifecycle === TaskLifecycleState.COMPLETED ||
           nextLifecycle === TaskLifecycleState.PARTIAL_SUCCESS ||
           nextLifecycle === TaskLifecycleState.FAILED) &&
         currentLifecycle !== TaskLifecycleState.FINAL_REPORT &&
@@ -275,6 +292,7 @@ export class AgentLoop {
 
     const ctx: ExecutionContext = {
       taskId,
+      executionId,
       originalTask: task,
       targetUrl: effectiveTargetUrl,
       mode: "live",
@@ -297,7 +315,9 @@ export class AgentLoop {
       latestObservation: null,
       taskConstraints: {},
       lifecycleHistory: [],
+      mediaPlayback: mediaManager.getRecord(),
     };
+    (ctx as any)._mediaManager = mediaManager;
 
     emitEvent("TASK_RECEIVED", `Agent received task: "${task}" [mode: ${operatingMode}]`);
     emitLifecycle(TaskLifecycleState.TASK_RECEIVED, 0, `Task received: "${task}"`);
@@ -490,10 +510,9 @@ export class AgentLoop {
         }
 
         const planSource = ctx.planningMetadata?.planSource ?? "deterministic";
-        const geminiNote = ctx.planningMetadata?.geminiInvoked ? " [Gemini-assisted planning]" : " [Deterministic planning]";
         emitEvent(
           "PLAN_READY",
-          `Generated plan with ${plan.actions.length} actions. Route: ${plan.routeDecision?.route.toUpperCase()}${geminiNote}`,
+          `Generated plan with ${plan.actions.length} actions. Route: ${plan.routeDecision?.route.toUpperCase()} [Deterministic planning]`,
           { planningMetadata: ctx.planningMetadata }
         );
       } catch (err: unknown) {
@@ -587,6 +606,7 @@ export class AgentLoop {
               completedSteps: ctx.completedSteps,
               extractedData: ctx.extractedData,
               downloads: ctx.downloads,
+              mediaPlayback: ctx.mediaPlayback,
             });
 
             ctx.taskVerification = taskVerif;
@@ -795,7 +815,20 @@ export class AgentLoop {
               (currentAttemptAction.type === ActionType.CLICK && currentAttemptAction.target?.value === "audio-play-button") ||
               currentAttemptAction.type === ActionType.MEDIA_PLAY
             ) {
-              emitLifecycle(TaskLifecycleState.PLAYBACK_STARTED, stepIndex, "Local audio playback started");
+              const playExtracted = execResponse.result.extractedData as any;
+              const isPlaying = playExtracted?.isPlaying === true;
+              mediaManager.processEvent({
+                status: isPlaying ? MediaPlaybackStatus.PLAYING : MediaPlaybackStatus.LOADING,
+                taskId: ctx.taskId,
+                executionId: ctx.executionId || executionId,
+                currentTime: playExtracted?.currentTime,
+                duration: playExtracted?.duration,
+                isAdPlaying: playExtracted?.isAdPlaying,
+                adCount: playExtracted?.adCount,
+                error: playExtracted?.error,
+              });
+              ctx.mediaPlayback = mediaManager.getRecord();
+              emitEvent("MEDIA_PLAYBACK_STATUS", `Media playback status: ${mediaManager.getStatus()}`, ctx.mediaPlayback);
             }
             emitLifecycle(TaskLifecycleState.ACTION_VERIFIED, stepIndex, `Action ${currentAttemptAction.type} completed and verified`);
             emitEvent("ACTION_SUCCESS", `Action ${currentAttemptAction.type} completed and verified`);
@@ -1039,6 +1072,7 @@ export class AgentLoop {
         observation: pageObservation,
         extractedData: ctx.extractedData,
         downloads: ctx.downloads,
+        mediaPlayback: ctx.mediaPlayback,
       });
 
       ctx.taskVerification = taskVerification;
@@ -1101,7 +1135,35 @@ export class AgentLoop {
       return false;
     }
     (ctx as any)._isFinalized = true;
+    if ((ctx as any)._mediaManager) {
+      (ctx as any)._mediaManager.markTaskTerminal();
+    }
     return true;
+  }
+
+  /**
+   * Safely handles an asynchronous media playback event using task ID and execution ID isolation.
+   * Stale, duplicate, or post-terminal events are handled safely without crashing the agent.
+   */
+  public handleMediaPlaybackEvent(
+    ctx: ExecutionContext,
+    event: Partial<MediaPlaybackEvent> & { status: MediaPlaybackStatus; taskId: string; executionId: string },
+    mediaManager?: MediaPlaybackManager
+  ): ProcessPlaybackEventResult {
+    const manager = mediaManager || (ctx as any)._mediaManager;
+    if (!manager) {
+      return {
+        accepted: false,
+        ignored: true,
+        reason: "No active media manager for execution context",
+        status: MediaPlaybackStatus.IDLE,
+      };
+    }
+    const result = manager.processEvent(event);
+    if (result.accepted && !result.ignored) {
+      ctx.mediaPlayback = manager.getRecord();
+    }
+    return result;
   }
 
   private handleSuccess(

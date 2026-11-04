@@ -221,7 +221,10 @@ export class SearchResultResolver {
       if (cardElements.length > 0) {
         for (const card of cardElements) {
           cardIndex++;
-          const cardId = card.id || `card_${cardIndex}`;
+          const cardId = card.id || `browseiq_card_${cardIndex}`;
+          if (!card.id) {
+            card.setAttribute("data-browseiq-card", cardId);
+          }
           seenCardIds.add(cardId);
 
           // Find all anchor links inside the card
@@ -284,14 +287,15 @@ export class SearchResultResolver {
             );
             const isTitle = link === primaryTitleLink || (!isThumb && link.textContent?.trim().length! > 5);
 
-            // Compute unique selector for this link
+            // Compute unique selector for this link scoped to card container
+            const containerSelector = card.id ? `#${card.id}` : `[data-browseiq-card="${cardId}"]`;
             let selector = "";
             if (link.id) {
               selector = `#${link.id}`;
             } else if (link.getAttribute("href")) {
-              selector = `a[href="${link.getAttribute("href")}"]`;
+              selector = `${containerSelector} a[href="${link.getAttribute("href")}"]`;
             } else {
-              selector = `a:has-text("${(link.textContent || "").slice(0, 30).trim()}")`;
+              selector = `${containerSelector} a`;
             }
 
             const title = link.getAttribute("title") ||
@@ -409,17 +413,26 @@ export class SearchResultResolver {
         // Keep relative if URL parsing fails
       }
 
-      // Build Playwright locator
+      // Build Playwright locator scoped to container
       let locator: Locator;
-      if (raw.selector.startsWith("#")) {
+      const containerLoc = raw.cardId
+        ? page.locator(`[data-browseiq-card="${raw.cardId}"], #${raw.cardId}`)
+        : null;
+
+      if (raw.selector.startsWith("#") && !raw.selector.includes(" ")) {
         locator = page.locator(raw.selector);
+      } else if (containerLoc && typeof (containerLoc as any).locator === "function") {
+        if (raw.href) {
+          locator = containerLoc.locator(`a[href="${raw.href}"]`);
+        } else if (raw.title) {
+          locator = containerLoc.locator(`a:has-text("${raw.title.slice(0, 40)}")`);
+        } else {
+          locator = page.locator(raw.selector);
+        }
       } else if (raw.href) {
-        // Use exact href matching when available
-        locator = page.locator(`a[href="${raw.href}"]`).first();
-      } else if (raw.title) {
-        locator = page.locator(`a:has-text("${raw.title.slice(0, 40)}")`).first();
+        locator = page.locator(`a[href="${raw.href}"]`);
       } else {
-        locator = page.locator(raw.selector).first();
+        locator = page.locator(raw.selector);
       }
 
       candidates.push({
@@ -843,24 +856,77 @@ export class SearchResultResolver {
    * refreshes the locator against the active page DOM.
    */
   static async revalidateAndLocate(page: Page, candidate: SearchCandidate): Promise<Locator> {
+    // 1. Check primary candidate locator within container
     try {
-      const isVis = await candidate.locator.isVisible({ timeout: 1500 }).catch(() => false);
-      const isEn = await candidate.locator.isEnabled({ timeout: 1500 }).catch(() => false);
-
-      if (isVis && isEn) {
-        return candidate.locator;
+      const count = await candidate.locator.count();
+      if (count === 1) {
+        const isVis = await candidate.locator.isVisible({ timeout: 1500 }).catch(() => false);
+        const isEn = await candidate.locator.isEnabled({ timeout: 1500 }).catch(() => false);
+        if (isVis && isEn) {
+          return candidate.locator;
+        }
+      } else if (count > 1) {
+        for (let i = 0; i < count; i++) {
+          const item = candidate.locator.nth(i);
+          if (
+            (await item.isVisible({ timeout: 1000 }).catch(() => false)) &&
+            (await item.isEnabled({ timeout: 1000 }).catch(() => false))
+          ) {
+            return item;
+          }
+        }
       }
     } catch {
       // Element may be detached or stale
     }
 
-    // Fallback: re-query in live DOM
+    // 2. Container-scoped fallback: re-query within card container
+    if (candidate.cardId) {
+      try {
+        const container = page.locator(`[data-browseiq-card="${candidate.cardId}"], #${candidate.cardId}`);
+        if (await container.isVisible({ timeout: 1000 }).catch(() => false)) {
+          if (candidate.url) {
+            const pathname = new URL(candidate.url).pathname;
+            const containerLink = container.locator(`a[href*="${pathname}"]`);
+            const cCount = await containerLink.count();
+            for (let i = 0; i < cCount; i++) {
+              const el = containerLink.nth(i);
+              if (await el.isVisible({ timeout: 1000 }).catch(() => false)) {
+                return el;
+              }
+            }
+          }
+          if (candidate.title) {
+            const containerTitle = container.locator(`a:has-text("${candidate.title.slice(0, 30)}")`);
+            const cCount = await containerTitle.count();
+            for (let i = 0; i < cCount; i++) {
+              const el = containerTitle.nth(i);
+              if (await el.isVisible({ timeout: 1000 }).catch(() => false)) {
+                return el;
+              }
+            }
+          }
+        }
+      } catch {
+        // Fall through
+      }
+    }
+
+    // 3. Fallback: re-query in live DOM
     if (candidate.url) {
       try {
         const pathname = new URL(candidate.url).pathname;
-        const fallback = page.locator(`a[href*="${pathname}"]`).first();
-        if (await fallback.isVisible({ timeout: 2000 }).catch(() => false)) {
+        const fallback = page.locator(`a[href*="${pathname}"]`);
+        const count = await fallback.count();
+        if (count === 1 && (await fallback.isVisible({ timeout: 2000 }).catch(() => false))) {
           return fallback;
+        } else if (count > 1) {
+          for (let i = 0; i < count; i++) {
+            const el = fallback.nth(i);
+            if (await el.isVisible({ timeout: 1000 }).catch(() => false)) {
+              return el;
+            }
+          }
         }
       } catch {
         // Fall through
@@ -868,9 +934,17 @@ export class SearchResultResolver {
     }
 
     if (candidate.title) {
-      const titleFallback = page.locator(`a:has-text("${candidate.title.slice(0, 35)}"), [title*="${candidate.title.slice(0, 35)}" i]`).first();
-      if (await titleFallback.isVisible({ timeout: 2000 }).catch(() => false)) {
+      const titleFallback = page.locator(`a:has-text("${candidate.title.slice(0, 35)}"), [title*="${candidate.title.slice(0, 35)}" i]`);
+      const count = await titleFallback.count();
+      if (count === 1 && (await titleFallback.isVisible({ timeout: 2000 }).catch(() => false))) {
         return titleFallback;
+      } else if (count > 1) {
+        for (let i = 0; i < count; i++) {
+          const el = titleFallback.nth(i);
+          if (await el.isVisible({ timeout: 1000 }).catch(() => false)) {
+            return el;
+          }
+        }
       }
     }
 

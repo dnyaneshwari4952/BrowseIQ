@@ -112,7 +112,7 @@ browser-automation-agent/
 │   │   ├── locator-engine.ts          # 9-step semantic fallback locator engine
 │   │   └── actions/                   # Deterministic action handlers
 │   ├── ai/
-│   │   ├── llm-provider.ts            # Abstract LLM adapter (OpenAI, Gemini, Mock)
+│   │   ├── llm-provider.ts            # Abstract LLM adapter (OpenAI, Mock)
 │   │   └── prompt-defense.ts          # Prompt injection scanner & boundary builder
 │   ├── observability/                 # Sensitive data redaction, logger, and metrics
 │   └── types/                         # TypeScript interfaces (plans, actions, errors)
@@ -154,7 +154,7 @@ cp .env.example .env
 
 | Variable | Description | Default |
 |---|---|---|
-| `LLM_PROVIDER` | LLM backend (`openai`, `gemini`, `mock`) | `openai` |
+| `LLM_PROVIDER` | LLM backend (`openai`, `mock`) | `openai` |
 | `LLM_API_KEY` | Provider API key | (Optional for Mock) |
 | `LLM_MODEL` | Provider model name | `gpt-4o-mini` |
 | `BROWSER_HEADLESS` | Visible browser window execution | `false` |

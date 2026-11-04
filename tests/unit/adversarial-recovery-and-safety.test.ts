@@ -694,7 +694,7 @@ describe("Phase 4 — Layer E: Adversarial Testing, Verification, Routing & Safe
   });
 
   // ===========================================================================
-  // SECTION 9: GEMINI QUOTA AND PROVIDER FALLBACK (Mocked Responses)
+  // SECTION 9: PROVIDER FALLBACK AND QUOTA RESILIENCE (Mocked Responses)
   // ===========================================================================
   describe("Section 9: Provider Fallback and Quota Resilience", () => {
     it("1. Primary provider succeeds: returns valid plan on first attempt", async () => {

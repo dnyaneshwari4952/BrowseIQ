@@ -1,20 +1,15 @@
 import { Action, ActionType, LocatorStrategy, RiskLevel, ActionSchema } from "../types/actions";
-import { Plan, TaskSuccessCriteria, RouteDecision, LLMPlanOutputSchema, LLMPlanOutput } from "../types/plans";
+import { Plan, TaskSuccessCriteria, RouteDecision, LLMPlanOutputSchema, LLMPlanOutput, PlanningMetadata } from "../types/plans";
 import { PageObservation } from "../types/browser";
 import { ApiRouter } from "../api/api-router";
 import { PromptDefense } from "../ai/prompt-defense";
-import { LLMProvider, createLLMProvider, MockProvider } from "../ai/llm-provider";
+import { LLMProvider } from "../ai/llm-provider";
 import { ErrorCode, AgentError } from "../types/errors";
 import { logger } from "../observability/logger";
 import { validateUrlString } from "../validation/url-policy";
 import { PlanValidator } from "../validation/plan-validator";
 import { SemanticDecomposer } from "./semantic-decomposer";
 import { OperatingMode, DEFAULT_OPERATING_MODE, coerceOperatingMode } from "../types/operating-mode";
-import {
-  GeminiPlanningInterface,
-  assessPlannerConfidence,
-  PlanningMetadata,
-} from "./gemini-planning-interface";
 
 import { DynamicTaskPlanner } from "../planning/dynamic-task-planner";
 import { EntityConstraintResolver } from "../planning/entity-constraint-resolver";
@@ -26,7 +21,7 @@ export interface PlannerOptions {
   forceBrowser?: boolean;
   /** Operating mode passed from the task lifecycle. Always coerced to Playwright. */
   operatingMode?: OperatingMode | string;
-  /** AbortSignal forwarded to Gemini requests when AI planning is invoked. */
+  /** AbortSignal forwarded to requests when planning is invoked. */
   abortSignal?: AbortSignal;
 }
 
@@ -46,13 +41,12 @@ export class Planner {
   }
 
   /**
-   * Generates a structured plan driven by the LLM Planner (Playwright-Only Architecture)
+   * Generates a structured plan driven by the Playwright Automation Agent
    *
    * Execution Architecture:
    * - Playwright is the single, permanent execution engine for all browser actions.
-   * - Straightforward tasks: handled deterministically via DynamicTaskPlanner (no LLM call required).
-   * - Complex / ambiguous tasks: Gemini AI planning is invoked when configured to synthesize Playwright actions.
-   * - If AI planning is unavailable or fails: falls back to deterministic planning for supported tasks.
+   * - Tasks are handled deterministically via DynamicTaskPlanner.
+   * - Custom LLM Provider is used if explicitly injected.
    */
   async plan(options: PlannerOptions): Promise<Plan & { planningMetadata?: PlanningMetadata }> {
     const {
@@ -60,7 +54,7 @@ export class Planner {
       targetUrl,
       observation,
       forceBrowser,
-      abortSignal,
+      abortSignal: _abortSignal,
     } = options;
     const operatingMode: OperatingMode = coerceOperatingMode(options.operatingMode);
 
@@ -73,70 +67,10 @@ export class Planner {
       forceBrowser,
     });
 
-    // 3. Decompose task intent (used by confidence assessment + plan validation)
+    // 3. Decompose task intent (used by plan validation)
     const taskIntent = SemanticDecomposer.decompose(sanitizedTask, observation, targetUrl);
 
-    // 4. Assess deterministic planner confidence
-    const signals = assessPlannerConfidence(sanitizedTask, observation, targetUrl, taskIntent);
-
-    // 5. AI Planning Delegation: delegate to Gemini when signals indicate genuine need
-    //    and Gemini is configured. Playwright executes all synthesized browser actions.
-    if (signals.needsAssistance && GeminiPlanningInterface.isConfigured()) {
-      logger.info(
-        `[Planner] Task complexity requires AI planning assistance. Confidence ${signals.confidenceScore.toFixed(2)}. ` +
-          `Invoking Gemini planning interface for Playwright execution. Reason: ${signals.reason}`
-      );
-
-      const geminiInterface = new GeminiPlanningInterface(this.llmProvider || undefined);
-      let geminiPlan: Plan;
-
-      try {
-        geminiPlan = await geminiInterface.requestPlan(
-          sanitizedTask,
-          targetUrl,
-          observation,
-          signals.reason,
-          abortSignal
-        );
-      } catch (geminiErr: unknown) {
-        const errMsg = geminiErr instanceof AgentError
-          ? geminiErr.message
-          : geminiErr instanceof Error
-          ? geminiErr.message
-          : String(geminiErr);
-
-        logger.error(`[Planner] AI planning failed: ${errMsg}.`);
-
-        throw new AgentError(
-          `Gemini-Assisted planning failed: ${errMsg}. Task requires AI assistance but the planning model could not generate a valid plan.`,
-          geminiErr instanceof AgentError ? geminiErr.code : ErrorCode.API_ERROR,
-          false,
-          { details: { reason: signals.reason } },
-          "gemini"
-        );
-      }
-
-      const planningMetadata: PlanningMetadata = {
-        operatingMode: "playwright",
-        geminiInvoked: true,
-        geminiInvokeReason: signals.reason,
-        deterministicConfidenceScore: signals.confidenceScore,
-        planSource: "gemini_assisted",
-        planValidationOutcome: "accepted",
-      };
-
-      return { ...geminiPlan, planningMetadata };
-    }
-
-    // 6. Gemini NOT configured — log and fall through to deterministic planner
-    if (signals.needsAssistance && !GeminiPlanningInterface.isConfigured()) {
-      logger.info(
-        `[Planner] Task indicates ambiguity (${signals.reason}) but AI planning is not configured. ` +
-          `Proceeding with deterministic planning for supported tasks.`
-      );
-    }
-
-    // 7. Deterministic Planning Path (Playwright Mode or when no external LLM is supplied)
+    // 4. Deterministic Planning Path (when no external LLM is supplied)
     if (!this.llmProvider) {
       const spec = EntityConstraintResolver.resolve({
         rawInstruction: sanitizedTask,
@@ -180,10 +114,16 @@ export class Planner {
         );
       }
 
+      // Calibrate confidence score based on entity constraint resolution and validation warnings
+      let confidence = typeof spec.confidence === "number" ? spec.confidence : 0.85;
+      if (validationResult.warnings && validationResult.warnings.length > 0) {
+        confidence = Math.max(0.1, confidence - validationResult.warnings.length * 0.05);
+      }
+      confidence = Math.round(confidence * 100) / 100;
+
       const deterministicMetadata: PlanningMetadata = {
         operatingMode,
-        geminiInvoked: false,
-        deterministicConfidenceScore: signals.confidenceScore,
+        deterministicConfidenceScore: confidence,
         planSource: "deterministic",
         planValidationOutcome: "accepted",
       };
@@ -191,13 +131,8 @@ export class Planner {
       return { ...deterministicPlan, planningMetadata: deterministicMetadata };
     }
 
-    // 8. Custom LLM Provider Planning Path
-    if (signals.needsAssistance) {
-      logger.info(
-        `[Planner] Custom LLM Provider planning path active. ` +
-          `Confidence ${signals.confidenceScore.toFixed(2)}. Synthesizing Playwright actions.`
-      );
-    }
+    // 5. Custom LLM Provider Planning Path
+    logger.info("[Planner] Custom LLM Provider planning path active. Synthesizing Playwright actions.");
 
     // Format current live DOM observation with untrusted boundaries
     const observationText = PromptDefense.formatObservationForLLM(observation);
@@ -322,9 +257,8 @@ CRITICAL RULES:
 
     const deterministicMetadata: PlanningMetadata = {
       operatingMode,
-      geminiInvoked: false,
-      deterministicConfidenceScore: signals.confidenceScore,
-      planSource: "deterministic",
+      deterministicConfidenceScore: 0.85,
+      planSource: "custom_llm",
       planValidationOutcome: "accepted",
     };
 
@@ -363,6 +297,13 @@ CRITICAL RULES:
           "deterministic"
         );
       }
+
+      replanned.planningMetadata = {
+        operatingMode: currentPlan.planningMetadata?.operatingMode || "playwright",
+        planSource: "deterministic",
+        planValidationOutcome: "accepted",
+        deterministicConfidenceScore: Math.max(0.2, Math.round(((currentPlan.planningMetadata?.deterministicConfidenceScore || 0.85) - 0.15) * 100) / 100),
+      };
 
       return replanned;
     }

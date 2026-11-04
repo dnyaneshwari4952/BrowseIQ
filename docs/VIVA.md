@@ -156,7 +156,7 @@ Task success is measured holistically:
 - On impossible or ambiguous tasks, did the agent fail honestly or ask for clarification?
 
 ### 21. How are credentials protected?
-- API keys (OpenAI, Gemini) and system tokens are stored in environment variables (`.env`) on the server.
+- API keys (OpenAI) and system tokens are stored in environment variables (`.env`) on the server.
 - Server-side routes handle LLM and API execution; secrets are never sent to client React components.
 - Diagnostics, execution trace logs, and event streams redact secret tokens.
 

@@ -305,6 +305,8 @@ export class ChallengeDetector {
     ];
 
     const AUTH_PATTERNS = [
+      /\bsession\s+(?:has\s+)?(?:expired|timed?\s*out)\b/i,
+      /\b(?:please\s+)?(?:sign\s*in|log\s*in)\s+(?:again\s+)?to\s+continue\b/i,
       /\b(?:sign(?:ing)?\s*in|log(?:ging)?\s*in|login)\s+(?:is\s+)?(?:required|needed)\b/i,
       /\b(?:sign(?:ing)?\s*in|log(?:ging)?\s*in|login)\s+(?:is\s+)?(?:required|needed)?\s*to\s+(?:listen|play|watch|stream|hear|continue|enjoy|unlock|access|full\s+(?:track|song|video|album|content))\b/i,
       /\b(?:sign(?:ing)?\s*in|log(?:ging)?\s*in|login)\b[^\n.!?]*\bto\b[^\n.!?]*\b(?:listen|play|watch|stream|hear|continue|enjoy|unlock|access|full\s+(?:track|song|video|album|content))\b/i,

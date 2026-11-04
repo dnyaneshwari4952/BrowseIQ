@@ -85,9 +85,25 @@ describe("Evaluation Benchmark Suite & Real E2E Harness (Requirements 20, 21, 22
     "LIVE E2E EXECUTION: Runs real AgentLoop + LLM Planner + Playwright against 26 distinct benchmark cases",
     { timeout: 240000 },
     async () => {
-      const isServerUp = await fetch("http://localhost:3000/api/health").then((r) => r.ok).catch(() => false);
+      let testBaseUrl = process.env.TEST_BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
+      let isServerUp = false;
+      for (const candidate of [testBaseUrl, `http://[::1]:${process.env.PORT || 3000}`, `http://127.0.0.1:${process.env.PORT || 3000}`]) {
+        try {
+          const res = await fetch(`${candidate}/api/health`);
+          if (res.ok) {
+            const data = await res.json().catch(() => null);
+            if (data?.system?.browserHeadless !== undefined || data?.components?.browser) {
+              testBaseUrl = candidate;
+              isServerUp = true;
+              break;
+            }
+          }
+        } catch {
+          // Try next candidate
+        }
+      }
       if (!isServerUp) {
-        console.log("Fixture server is offline at localhost:3000. Skipping live network integration run.");
+        console.log(`BrowseIQ fixture server is offline at ${testBaseUrl}. Skipping live network integration run.`);
         return;
       }
 
@@ -312,9 +328,10 @@ describe("Evaluation Benchmark Suite & Real E2E Harness (Requirements 20, 21, 22
 
       for (const tc of benchmarkCases) {
         const startMs = Date.now();
+        const resolvedUrl = tc.targetUrl ? tc.targetUrl.replace("http://localhost:3000", testBaseUrl) : tc.targetUrl;
         const ctx = await agentLoop.runTask({
           task: tc.task,
-          targetUrl: tc.targetUrl,
+          targetUrl: resolvedUrl,
         });
         const durationMs = Date.now() - startMs;
 

@@ -352,7 +352,7 @@ describe("Visible Browser Window Lifecycle & Headless Mode Removal", () => {
     expect(result.browserWindow?.isOpen).toBe(true);
   }, 20000);
 
-  it("13. Playwright and Gemini-Assisted operating modes both use Playwright browser execution", async () => {
+  it("13. Playwright and legacy coerced operating modes both use Playwright browser execution", async () => {
     const agent = new AgentLoop();
     const mockSession = {
       taskId: "mode-test",
@@ -392,7 +392,7 @@ describe("Visible Browser Window Lifecycle & Headless Mode Removal", () => {
     expect(createSessionSpy).toHaveBeenCalled();
     createSessionSpy.mockClear();
 
-    // Gemini-Assisted mode
+    // Legacy coerced mode
     await agent.runTask({
       task: "Open example",
       targetUrl: "https://example.com",

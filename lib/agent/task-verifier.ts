@@ -18,6 +18,7 @@ export interface TaskVerificationContext {
   downloads?: any[];
   planActions?: Action[];
   plan?: any;
+  mediaPlayback?: any;
 }
 
 /**
@@ -37,6 +38,7 @@ export class TaskVerifier {
     observation?: PageObservation | null;
     extractedData?: unknown;
     downloads?: any[];
+    mediaPlayback?: any;
   }): TaskVerificationResult {
     return this.verifyTaskCompletion({
       taskDescription: params.task,
@@ -48,6 +50,7 @@ export class TaskVerifier {
       downloads: params.downloads,
       planActions: params.plan?.actions,
       plan: params.plan,
+      mediaPlayback: params.mediaPlayback,
     });
   }
 
@@ -214,18 +217,35 @@ export class TaskVerifier {
         reason: "No actions were executed for this task.",
         missingOutputs: criteria?.requiredOutputs || [],
         failedChecks: ["actionsExecuted"],
+        evidence: {
+          originalObjective: taskDescription,
+          finalUrl: latestObservation?.url || ctx.targetUrl,
+          observedStateSummary: "No actions executed",
+          conditionsPassed: [],
+          conditionsFailed: ["actionsExecuted"],
+          reason: "No actions were executed for this task.",
+        },
       };
     }
 
     // 2. Detect if any step in the plan failed
     const failedStep = completedSteps.find((s) => s.status === "failed");
     if (failedStep) {
+      const stepReason = `Task stopped because action '${failedStep.type}' failed: ${failedStep.error?.message || "Unknown error"}`;
       return {
         passed: false,
         outcome: "failed",
-        reason: `Task stopped because action '${failedStep.type}' failed: ${failedStep.error?.message || "Unknown error"}`,
+        reason: stepReason,
         missingOutputs: criteria?.requiredOutputs || [],
         failedChecks: ["allStepsPassed"],
+        evidence: {
+          originalObjective: taskDescription,
+          finalUrl: latestObservation?.url || ctx.targetUrl,
+          observedStateSummary: `Action ${failedStep.type} failed`,
+          conditionsPassed: [],
+          conditionsFailed: ["allStepsPassed"],
+          reason: stepReason,
+        },
       };
     }
 
@@ -643,7 +663,7 @@ export class TaskVerifier {
         (latestObservation?.headings || []).join(" ") +
         " " +
         (latestObservation?.interactiveElements || [])
-          .map((el) => `${el.text || ""} ${el.label || ""}`.trim())
+          .map((el) => `${el.text || ""} ${el.label || ""} ${el.placeholder || ""} ${el.name || ""}`.trim())
           .join(" ")
       ).toLowerCase();
 
@@ -811,6 +831,7 @@ export class TaskVerifier {
         !hasMediaAuthRestriction &&
         (
           mediaElements.some((m) => m.isPlaying && !m.isPaused && !m.error) ||
+          Boolean(ctx.mediaPlayback && ctx.mediaPlayback.status === "playing" && ctx.mediaPlayback.verified !== false) ||
           Boolean(extractedData && typeof extractedData === "object" && (extractedData as any).isPlaying === true && !(extractedData as any).isPaused && (extractedData as any).playbackVerified !== false) ||
           completedSteps.some((s) => (s.type === ActionType.MEDIA_PLAY || /media_play/i.test(String(s.type))) && s.status === "completed" && (s.extractedData as any)?.isPlaying === true && (s.extractedData as any)?.playbackVerified !== false) ||
           completedSteps.some((s) => s.actionId?.includes("verify-progress") && s.status === "completed" && String(s.extractedData || "").toUpperCase().includes("ACTIVE")) ||
@@ -919,7 +940,7 @@ export class TaskVerifier {
           originalObjective: taskDescription,
           finalUrl: latestObservation?.url || ctx.targetUrl,
           observedStateSummary: `Completed ${completedSteps.filter((s) => s.status === "completed").length} step(s); ${missingOutputs.length} output(s) missing`,
-          conditionsPassed: criteria?.verificationChecks?.filter((c) => {
+          conditionsPassed: (effectiveCriteria?.verificationChecks || criteria?.verificationChecks)?.filter((c) => {
             if (failedChecks.includes(c)) return false;
             if (c === "titleExtracted" && missingOutputs.includes("title")) return false;
             if (c === "priceExtracted" && (missingOutputs.includes("price") || failedChecks.includes("priceIdentified"))) return false;
@@ -973,8 +994,8 @@ export class TaskVerifier {
         originalObjective: taskDescription,
         finalUrl: latestObservation?.url || ctx.targetUrl,
         observedStateSummary: `Successfully verified ${completedSteps.length} action(s) against live browser state`,
-        verifiedFields: criteria?.requiredOutputs || [],
-        conditionsPassed: criteria?.verificationChecks || ["taskVerified"],
+        verifiedFields: effectiveCriteria?.requiredOutputs || criteria?.requiredOutputs || [],
+        conditionsPassed: effectiveCriteria?.verificationChecks || criteria?.verificationChecks || ["taskVerified"],
         conditionsFailed: [],
         reason: "Task completed and verified against all required criteria.",
       },

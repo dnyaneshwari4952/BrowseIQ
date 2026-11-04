@@ -214,23 +214,30 @@ export class ActionExecutor {
               );
             }
           } else {
-            await locator!.click({ timeout: action.timeout || 10000 });
+            const clickTimeout = action.timeout || 10000;
+            const target = await ActionExecutor.resolveUnambiguousInteractiveTarget(locator!, action);
+            await target.click({ timeout: clickTimeout });
           }
           break;
         }
 
         case ActionType.DOUBLE_CLICK: {
-          await locator!.dblclick({ timeout: action.timeout || 10000 });
+          const target = await ActionExecutor.resolveUnambiguousInteractiveTarget(locator!, action);
+          await target.dblclick({ timeout: action.timeout || 10000 });
           break;
         }
 
         case ActionType.FILL: {
-          await locator!.fill(String(action.value ?? ""), { timeout: action.timeout || 10000 });
+          const fillTimeout = action.timeout || 10000;
+          const fillVal = String(action.value ?? "");
+          const target = await ActionExecutor.resolveUnambiguousInteractiveTarget(locator!, action);
+          await target.fill(fillVal, { timeout: fillTimeout });
           break;
         }
 
         case ActionType.TYPE: {
-          await locator!.pressSequentially(String(action.value ?? ""), {
+          const target = await ActionExecutor.resolveUnambiguousInteractiveTarget(locator!, action);
+          await target.pressSequentially(String(action.value ?? ""), {
             timeout: action.timeout || 10000,
           });
           break;
@@ -252,22 +259,26 @@ export class ActionExecutor {
         }
 
         case ActionType.SELECT: {
-          await locator!.selectOption(String(action.value || ""), { timeout: action.timeout || 10000 });
+          const target = await ActionExecutor.resolveUnambiguousInteractiveTarget(locator!, action);
+          await target.selectOption(String(action.value || ""), { timeout: action.timeout || 10000 });
           break;
         }
 
         case ActionType.CHECK: {
-          await locator!.check({ timeout: action.timeout || 10000 });
+          const target = await ActionExecutor.resolveUnambiguousInteractiveTarget(locator!, action);
+          await target.check({ timeout: action.timeout || 10000 });
           break;
         }
 
         case ActionType.UNCHECK: {
-          await locator!.uncheck({ timeout: action.timeout || 10000 });
+          const target = await ActionExecutor.resolveUnambiguousInteractiveTarget(locator!, action);
+          await target.uncheck({ timeout: action.timeout || 10000 });
           break;
         }
 
         case ActionType.HOVER: {
-          await locator!.hover({ timeout: action.timeout || 10000 });
+          const target = await ActionExecutor.resolveUnambiguousInteractiveTarget(locator!, action);
+          await target.hover({ timeout: action.timeout || 10000 });
           break;
         }
 
@@ -417,7 +428,7 @@ export class ActionExecutor {
         }
 
         case ActionType.UPLOAD: {
-          const filePath = String(action.value || "");
+          const filePath = String(action.value || (action as any).filePath || "");
           if (!filePath) {
             throw new AgentError("Upload action missing file path in value", ErrorCode.VALIDATION_FAILED, false);
           }
@@ -583,9 +594,52 @@ export class ActionExecutor {
           let isPlaybackActive = false;
           let finalHtmlState: any = null;
           let finalUiPauseVisible = false;
+          let isAdPlaying = false;
+          let isBuffering = false;
+          let initialObservedTime = -1;
+          let timeAdvanced = false;
 
-          for (let poll = 0; poll < 6; poll++) {
-            await page.waitForTimeout(500);
+          const maxPolls = 6;
+          for (let poll = 0; poll < maxPolls; poll++) {
+            await page.waitForTimeout(250);
+
+            // Check for advertisements or buffering indicators (e.g. YouTube preroll ads or spinners)
+            const playerState = await page.evaluate(() => {
+              const adElement = document.querySelector(
+                ".ad-showing, .ad-interrupting, .video-ads, .ytp-ad-player-overlay, .ytp-ad-text, .ytp-ad-preview-container, .ytp-ad-skip-button-container"
+              );
+              const spinner = document.querySelector(
+                ".ytp-spinner:not([style*='display: none']):not([style*='display:none']), .loading-spinner"
+              );
+              const video = document.querySelector<HTMLMediaElement>("video, audio");
+              return {
+                hasAd: Boolean(adElement),
+                hasSpinner: Boolean(spinner),
+                currentTime: video ? video.currentTime : 0,
+                duration: video ? video.duration : 0,
+                paused: video ? video.paused : true,
+                ended: video ? video.ended : false,
+                readyState: video ? video.readyState : 0,
+                error: video && video.error ? video.error.message || `MediaError_${video.error.code}` : null,
+              };
+            }).catch(() => null);
+
+            if (playerState) {
+              if (playerState.hasAd) {
+                isAdPlaying = true;
+              }
+              if (playerState.hasSpinner || (playerState.readyState > 0 && playerState.readyState < 3)) {
+                isBuffering = true;
+              } else {
+                isBuffering = false;
+              }
+
+              if (initialObservedTime < 0 && playerState.currentTime >= 0) {
+                initialObservedTime = playerState.currentTime;
+              } else if (playerState.currentTime > initialObservedTime) {
+                timeAdvanced = true;
+              }
+            }
 
             const hasHtmlMediaAfter = (await page.locator("video, audio").count().catch(() => 0)) > 0;
             finalHtmlState = hasHtmlMediaAfter
@@ -617,8 +671,12 @@ export class ActionExecutor {
               break;
             }
 
-            if ((finalHtmlState && finalHtmlState.isPlaying) || finalUiPauseVisible) {
+            if ((finalHtmlState && finalHtmlState.isPlaying) || finalUiPauseVisible || isAdPlaying || timeAdvanced) {
               isPlaybackActive = true;
+              // If ad is playing or video is buffering, allow settling without premature exit
+              if (!timeAdvanced && (isAdPlaying || isBuffering) && poll < maxPolls - 2) {
+                continue;
+              }
               break;
             }
           }
@@ -656,7 +714,9 @@ export class ActionExecutor {
               isBlocked: false,
               isPlaying: true,
               isPaused: false,
-              currentTime: finalHtmlState?.currentTime || 1,
+              isAdPlaying,
+              isBuffering: false,
+              currentTime: finalHtmlState?.currentTime || (timeAdvanced ? 1 : 0.5),
               duration: finalHtmlState?.duration || 0,
               readyState: finalHtmlState?.readyState || 4,
               error: null,
@@ -1095,6 +1155,123 @@ export class ActionExecutor {
         await page.waitForTimeout(100);
       }
     }
+  }
+
+  /**
+   * Resolves a Playwright locator to a single unambiguous, visible, and enabled target.
+   * Never selects .first() merely because multiple matches exist.
+   * If multiple visible elements match without a specified index or unique container,
+   * throws AgentError(ErrorCode.ELEMENT_AMBIGUOUS) requiring clarification.
+   */
+  private static async resolveUnambiguousInteractiveTarget(
+    locator: Locator,
+    action: Action
+  ): Promise<Locator> {
+    const totalCount = await locator.count();
+    if (totalCount === 0) {
+      throw new AgentError(
+        `Target element not found: "${action.target?.value || action.type}"`,
+        ErrorCode.ELEMENT_NOT_FOUND,
+        true,
+        { action }
+      );
+    }
+
+    if (totalCount === 1) {
+      const isVis = await locator.isVisible().catch(() => false);
+      if (!isVis) {
+        throw new AgentError(
+          `Target element "${action.target?.value || action.type}" exists in DOM but is not visible.`,
+          ErrorCode.ELEMENT_NOT_VISIBLE,
+          true,
+          { action }
+        );
+      }
+      const isEn = await locator.isEnabled().catch(() => false);
+      if (!isEn) {
+        throw new AgentError(
+          `Target element "${action.target?.value || action.type}" is disabled and cannot be interacted with.`,
+          ErrorCode.ELEMENT_DISABLED,
+          true,
+          { action }
+        );
+      }
+      return locator;
+    }
+
+    // Multiple elements match in DOM:
+    // 1. If an ordinal index was explicitly specified in the target, respect and validate it
+    if (action.target?.index !== undefined) {
+      const indexed = locator.nth(action.target.index);
+      const isVis = await indexed.isVisible().catch(() => false);
+      if (!isVis) {
+        throw new AgentError(
+          `Target element at index ${action.target.index} for "${action.target.value}" is not visible.`,
+          ErrorCode.ELEMENT_NOT_VISIBLE,
+          true,
+          { action, index: action.target.index }
+        );
+      }
+      const isEn = await indexed.isEnabled().catch(() => false);
+      if (!isEn) {
+        throw new AgentError(
+          `Target element at index ${action.target.index} for "${action.target.value}" is disabled.`,
+          ErrorCode.ELEMENT_DISABLED,
+          true,
+          { action, index: action.target.index }
+        );
+      }
+      return indexed;
+    }
+
+    // 2. Inspect visibility across matches to filter out hidden duplicates
+    const visibleIndices: number[] = [];
+    const maxToCheck = Math.min(totalCount, 20);
+    for (let i = 0; i < maxToCheck; i++) {
+      try {
+        if (await locator.nth(i).isVisible()) {
+          visibleIndices.push(i);
+        }
+      } catch {
+        // Element may be detached or obscured
+      }
+    }
+
+    if (visibleIndices.length === 0) {
+      throw new AgentError(
+        `Target element "${action.target?.value || action.type}" exists (${totalCount} matches in DOM) but none are visible.`,
+        ErrorCode.ELEMENT_NOT_VISIBLE,
+        true,
+        { action, totalMatches: totalCount }
+      );
+    }
+
+    if (visibleIndices.length === 1) {
+      const singleTarget = locator.nth(visibleIndices[0]);
+      const isEn = await singleTarget.isEnabled().catch(() => false);
+      if (!isEn) {
+        throw new AgentError(
+          `Target element "${action.target?.value || action.type}" is disabled.`,
+          ErrorCode.ELEMENT_DISABLED,
+          true,
+          { action }
+        );
+      }
+      return singleTarget;
+    }
+
+    // Multiple VISIBLE elements match without an index!
+    // NEVER select .first() blindly: fail honestly with ELEMENT_AMBIGUOUS to request clarification
+    throw new AgentError(
+      `Target "${action.target?.value || action.type}" matches ${visibleIndices.length} ambiguous visible elements. Container scoping or ordinal index required.`,
+      ErrorCode.ELEMENT_AMBIGUOUS,
+      true,
+      {
+        action,
+        visibleMatchesCount: visibleIndices.length,
+        totalMatchesCount: totalCount,
+      }
+    );
   }
 }
 

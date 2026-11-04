@@ -2,8 +2,8 @@ import { z } from "zod";
 
 const EnvConfigSchema = z.object({
   // LLM Provider
-  LLM_PROVIDER: z.enum(["openai", "anthropic", "gemini", "mock"]).default("openai"),
-  LLM_FALLBACK_PROVIDER: z.enum(["openai", "anthropic", "gemini", "mock", "none"]).default("none"),
+  LLM_PROVIDER: z.enum(["openai", "mock"]).default("openai"),
+  LLM_FALLBACK_PROVIDER: z.enum(["openai", "mock", "none"]).default("none"),
   LLM_API_KEY: z.string().default("mock-key"),
   LLM_BASE_URL: z.string().url().default("https://api.openai.com/v1"),
   LLM_MODEL: z.string().default("gpt-4o-mini"),
@@ -16,10 +16,6 @@ const EnvConfigSchema = z.object({
   GROK_API_KEY: z.string().optional(),
   GROK_BASE_URL: z.string().url().optional(),
   GROK_MODEL: z.string().optional(),
-
-  // Gemini Specific Configuration (Official @google/genai SDK)
-  GEMINI_API_KEY: z.string().optional(),
-  GEMINI_MODEL: z.string().default("gemini-flash-latest"),
 
   // Browser & Playwright: Headless mode removed — visible browser execution is strictly enforced.
   BROWSER_HEADLESS: z
