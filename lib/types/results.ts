@@ -64,6 +64,7 @@ export interface ExecutionContext {
   };
   retries: number;
   replans: number;
+  recoveryAttempts?: number;
   routeDecisions: RouteDecision[];
   recoveryHistory?: RecoveryAttemptRecord[];
   requiresUserConfirmation?: boolean;

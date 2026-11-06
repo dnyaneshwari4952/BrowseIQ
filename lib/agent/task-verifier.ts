@@ -21,6 +21,21 @@ export interface TaskVerificationContext {
   mediaPlayback?: any;
 }
 
+export function isSearchEngineHomepage(rawUrl: string): boolean {
+  const u = (rawUrl || "").toLowerCase().trim();
+  if (!u || u === "about:blank") return false;
+  if (/(?:\/search|\?q=|\/s\?|\/find|\/results|#\/search|&q=|\?query=|\/test-fixtures\/search)/i.test(u)) {
+    return false;
+  }
+  if (/^https?:\/\/(?:www\.)?google\.[a-z.]+(?:\/(?:webhp)?)?(?:\?[^#]*)?$/i.test(u)) return true;
+  if (/^https?:\/\/(?:www\.)?bing\.com\/?(?:\?[^#]*)?$/i.test(u)) return true;
+  if (/^https?:\/\/(?:www\.)?duckduckgo\.com\/?(?:\?[^#]*)?$/i.test(u)) return true;
+  if (/^https?:\/\/(?:www\.)?amazon\.[a-z.]+\/?(?:\?[^#]*)?$/i.test(u)) return true;
+  if (/^https?:\/\/(?:[a-z]+\.)?wikipedia\.org\/?(?:wiki\/(?:Main_Page)?)?(?:\?[^#]*)?$/i.test(u)) return true;
+  if (/^https?:\/\/[^\/]+\/?(?:\?[^#]*)?$/i.test(u)) return true;
+  return false;
+}
+
 /**
  * Task Verifier (Part 2, Part 3, Part 4)
  * Evaluates whether the user's actual high-level goal was accomplished,
@@ -74,6 +89,13 @@ export class TaskVerifier {
       taskLower.includes("without submitting") ||
       taskLower.includes("unsubmitted") ||
       taskLower.includes("save draft");
+
+    const isExplicitSearch =
+      /(?:search|query)\b/i.test(taskLower) ||
+      /\b(?:find|look\s+for)\s+(?:all\s+)?(?:results?|products?|items?|catalog|matches)\b/i.test(taskLower);
+
+    const currentObsUrl = (latestObservation?.url || "").toLowerCase();
+    const isHomepage = isSearchEngineHomepage(currentObsUrl);
 
     const missingOutputsSet = new Set<string>();
     const failedChecksSet = new Set<string>();
@@ -389,9 +411,18 @@ export class TaskVerifier {
       }
 
       // Check verificationChecks (Requirements 2, 4, 6, Phase 2K)
+      const currentUrl = (latestObservation?.url || "").toLowerCase();
+      const isHomepage = isSearchEngineHomepage(currentUrl);
+
       for (const check of effectiveCriteria.verificationChecks) {
         if (check === "resultsExist") {
-          const hasResults =
+          // A homepage root must NEVER satisfy resultsExist for a search task
+          if (isHomepage && isExplicitSearch) {
+            failedChecksSet.add("resultsExist");
+            continue;
+          }
+
+          const hasExtractedResults =
             Boolean(
               extractedData &&
                 typeof extractedData === "object" &&
@@ -405,33 +436,43 @@ export class TaskVerifier {
                   (typeof (extractedData as any).total === "number" && (extractedData as any).total > 0) ||
                   (Array.isArray((extractedData as any).products) && (extractedData as any).products.length > 0) ||
                   (Array.isArray((extractedData as any).results) && (extractedData as any).results.length > 0) ||
-                  (Array.isArray(extractedData) && extractedData.length > 0) ||
-                  (Object.keys(extractedData).length > 0 &&
-                    Object.values(extractedData).some(
-                      (v) => v !== null && v !== undefined && String(v).trim().length > 0
-                    ))
-                )
-            ) ||
-            Boolean(
-              latestObservation &&
-                (latestObservation.interactiveElements.length > 0 || latestObservation.headings.length > 0) &&
-                !/no (?:matching )?results found|0 results found|0 products found|did not match any/i.test(
-                  (latestObservation.summary || "") + " " + latestObservation.headings.join(" ")
+                  (Array.isArray(extractedData) && extractedData.length > 0)
                 )
             );
-          if (!hasResults) {
+
+          const hasSearchResultsContainer = Boolean(
+            latestObservation &&
+            (
+              latestObservation.pageType === "search_results" ||
+              /(?:\/search|\?q=|\/s\?|\/find|\/results|#\/search)/i.test(currentUrl) ||
+              currentUrl.includes("/test-fixtures/search")
+            ) &&
+            (
+              (latestObservation.headings && latestObservation.headings.some(h => !/^(?:google|bing|search|navigation|home|menu)$/i.test(h.trim()))) ||
+              (latestObservation.interactiveElements && latestObservation.interactiveElements.some(el => el.role === "article" || el.href?.includes("search") || (el.text && el.text.length > 15)))
+            ) &&
+            !/no (?:matching )?results found|0 results found|0 products found|did not match any/i.test(
+              (latestObservation.summary || "") + " " + (latestObservation.headings || []).join(" ")
+            )
+          );
+
+          if (!hasExtractedResults && !hasSearchResultsContainer) {
             failedChecksSet.add("resultsExist");
           }
         }
         if (check === "searchSubmitted") {
-          const hasSearch = SemanticOperationVerifier.isOperationAccomplished({
-            operation: "search",
-            completedSteps,
-            planActions: ctx.planActions || ctx.plan?.actions,
-            observation: latestObservation,
-            extractedData,
-          });
-          if (!hasSearch) failedChecksSet.add("searchSubmitted");
+          if (isHomepage) {
+            failedChecksSet.add("searchSubmitted");
+          } else {
+            const hasSearch = SemanticOperationVerifier.isOperationAccomplished({
+              operation: "search",
+              completedSteps,
+              planActions: ctx.planActions || ctx.plan?.actions,
+              observation: latestObservation,
+              extractedData,
+            });
+            if (!hasSearch) failedChecksSet.add("searchSubmitted");
+          }
         }
         if (check === "downloadCompleted") {
           const hasVerifiedDownload = Boolean(
@@ -639,6 +680,9 @@ export class TaskVerifier {
           if (val !== undefined && val !== null) {
             filledValues.push(String(val).toLowerCase().trim());
           }
+          if (step.userIntent) {
+            filledValues.push(String(step.userIntent).toLowerCase().trim());
+          }
         }
       }
 
@@ -688,10 +732,16 @@ export class TaskVerifier {
 
       const pageHasQuery = matchesQueryIntent(pageText);
 
-      // Search submission followed by an unrelated page must fail verification!
+      // Search submission followed by an unrelated page or unsubmitted homepage must fail verification!
       if (!isApiRoute && !queryWasEntered && !dataHasQuery && !pageHasQuery) {
         failedChecksSet.add(`queryResultsFor:${queryLower}`);
         searchFailureReason = `The target page does not contain a search interface or results matching '${query}'.`;
+      } else if (isHomepage && !isApiRoute) {
+        failedChecksSet.add(`queryResultsFor:${queryLower}`);
+        failedChecksSet.add("searchResultsNotEmpty");
+        failedChecksSet.add("resultsExist");
+        failedChecksSet.add("searchSubmitted");
+        searchFailureReason = `The browser remained on the homepage without submitting the search or navigating to search results.`;
       } else if (!isApiRoute && queryWasEntered && !dataHasQuery && !pageHasQuery) {
         failedChecksSet.add(`queryResultsFor:${queryLower}`);
         failedChecksSet.add("searchResultsNotEmpty");

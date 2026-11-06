@@ -1,6 +1,6 @@
 import fs from "fs";
 import { Page, Locator } from "playwright";
-import { Action, ActionExecutionResult, ActionStatus, ActionType } from "../types/actions";
+import { Action, ActionExecutionResult, ActionStatus, ActionType, RiskLevel } from "../types/actions";
 import { AgentState, Plan, RouteDecision } from "../types/plans";
 import { PageObservation } from "../types/browser";
 import { ExecutionContext, DownloadedArtifact, RecoveryAttemptRecord } from "../types/results";
@@ -11,7 +11,7 @@ import { browserManager } from "../browser/browser-manager";
 import { ActionExecutor } from "../browser/action-executor";
 import { PageObserver } from "../browser/page-observer";
 import { Planner } from "./planner";
-import { TaskVerifier } from "./task-verifier";
+import { TaskVerifier, isSearchEngineHomepage } from "./task-verifier";
 import { RecoveryEngine, RecoveryDecision } from "./recovery-engine";
 import { ApiRegistry } from "../api/api-registry";
 import { ApiExecutor, ApiErrorCode, ApiExecutionResult } from "../api/api-executor";
@@ -1040,7 +1040,7 @@ export class AgentLoop {
       // Capture settled final page state before verification
       if (tab?.page) {
         try {
-          await tab.page.waitForLoadState("domcontentloaded", { timeout: 3000 }).catch(() => {});
+          await tab.page.waitForLoadState("domcontentloaded", { timeout: 3000 }).catch(() => { });
           await tab.page.waitForTimeout(400);
           pageObservation = await PageObserver.observe(tab.page, activeTabId || "tab-0");
           ctx.currentUrl = pageObservation.url;
@@ -1064,7 +1064,7 @@ export class AgentLoop {
         return this.handleBlocked(ctx, reason, emitEvent, emitState);
       }
 
-      const taskVerification = TaskVerifier.verifyTask({
+      let taskVerification = TaskVerifier.verifyTask({
         task,
         plan,
         targetUrl,
@@ -1077,6 +1077,159 @@ export class AgentLoop {
 
       ctx.taskVerification = taskVerification;
       ctx.latestObservation = pageObservation;
+
+      // Intelligent Recovery for Search Navigation Stalls (Requirement 4)
+      const isSearchTask =
+        plan.taskSpec?.operation === "SEARCH" ||
+        /(?:search|query)\b/i.test(task) ||
+        plan.actions.some((a) => a.id?.includes("search") || a.type === ActionType.FILL);
+
+      const currentObsUrl = (pageObservation?.url || "").toLowerCase();
+      const hasHomepageStall =
+        !taskVerification.passed &&
+        pageObservation &&
+        !taskVerification.isBlocked &&
+        (isSearchEngineHomepage(currentObsUrl) ||
+          taskVerification.failedChecks.includes("searchSubmitted") ||
+          taskVerification.failedChecks.includes("searchResultsNotEmpty")) &&
+        !/(?:\/search|\?q=|\/s\?|\/find|\/results|#\/search|&q=|\?query=)/i.test(currentObsUrl);
+
+      const searchRecoveriesUsed = (ctx.recoveryHistory || []).filter((r) => r.failureCategory === "SEARCH_SUBMISSION_STALLED").length;
+
+      if (!taskVerification.passed && isSearchTask && hasHomepageStall && searchRecoveriesUsed < 1 && activeTab && activeTab.page && !isAborted()) {
+        ctx.recoveryAttempts = (ctx.recoveryAttempts || 0) + 1;
+        emitEvent("RECOVERY_STARTED", "Search submission stalled on homepage. Executing intelligent search recovery...");
+        emitLifecycle(TaskLifecycleState.RECOVERING, stepIndex, "Recovering stalled search submission on homepage");
+
+        // 1. Check for challenge / CAPTCHA on current page
+        const challengeBefore = ChallengeDetector.detect(pageObservation);
+        if (challengeBefore.isBlocked) {
+          clearTimeout(timeoutTimer);
+          const reason = challengeBefore.reason || "Access restricted by challenge page.";
+          return this.handleBlocked(ctx, reason, emitEvent, emitState);
+        }
+
+        // 2. Locate search input and ensure query is present
+        const query = plan.taskSpec?.searchQuery || plan.taskSpec?.targetEntity || SemanticDecomposer.decompose(task, pageObservation).query;
+        if (query) {
+          const cleanSelector = [
+            "textarea[name='q']",
+            "input[name='q']:not([type='submit']):not([type='button'])",
+            "input[name='search_query']",
+            "input[type='search']",
+            "input[role='searchbox']",
+            "textarea[role='searchbox']",
+            "textarea[aria-label*='search' i]",
+            "input:not([type='submit']):not([type='button']):not([type='reset']):not([type='image']):not([type='hidden'])[aria-label*='search' i]",
+            "input:not([type='submit']):not([type='button']):not([type='reset']):not([type='image']):not([type='hidden'])[placeholder*='search' i]",
+          ].join(", ");
+
+          try {
+            const searchInput = activeTab.page.locator(cleanSelector).first();
+            const inputCount = await searchInput.count().catch(() => 0);
+            if (inputCount > 0) {
+              const currentVal = await searchInput.inputValue().catch(() => "");
+              if (currentVal !== query) {
+                await searchInput.fill(query).catch(() => { });
+              }
+              // Submit using Enter
+              await searchInput.press("Enter").catch(() => { });
+              await activeTab.page.waitForTimeout(600);
+
+              // If still on homepage, attempt alternative submission via Search button or form submit
+              const midUrl = activeTab.page.url().toLowerCase();
+              if (isSearchEngineHomepage(midUrl)) {
+                const searchBtn = activeTab.page
+                  .locator("input[name='btnK']:visible, button[name='btnK']:visible, input[value='Google Search']:visible, button[type='submit']:visible, input[type='submit']:visible")
+                  .first();
+                if ((await searchBtn.count().catch(() => 0)) > 0) {
+                  await searchBtn.click({ timeout: 2000 }).catch(() => { });
+                } else {
+                  await activeTab.page.evaluate(() => {
+                    const form = document.querySelector<HTMLFormElement>("form[action*='/search'], form[role='search'], form");
+                    if (form) {
+                      if (form.requestSubmit) form.requestSubmit();
+                      else form.submit();
+                    }
+                  }).catch(() => { });
+                }
+              }
+
+              // Wait for navigation or results container
+              await activeTab.page.waitForLoadState("domcontentloaded", { timeout: 6000 }).catch(() => { });
+              await activeTab.page.waitForTimeout(1500);
+
+              // Re-observe page
+              pageObservation = await PageObserver.observe(activeTab.page, activeTab.tabId);
+              ctx.latestObservation = pageObservation;
+
+              // Check for challenge after submit
+              const challengeAfter = ChallengeDetector.detect(pageObservation);
+              if (challengeAfter.isBlocked) {
+                clearTimeout(timeoutTimer);
+                const reason = challengeAfter.reason || "Access restricted by challenge page.";
+                return this.handleBlocked(ctx, reason, emitEvent, emitState);
+              }
+
+              // Extract search results if present
+              const extractedAfterRecovery = await activeTab.page.evaluate(() => {
+                const cards = Array.from(document.querySelectorAll(
+                  '#search .g, #rso > div, div[data-sokoban-container], .MjjYud, .result-card, .search-result, .result, .mw-search-result, article, li.b_algo'
+                ));
+                if (cards.length === 0) return null;
+                const seen = new Set<string>();
+                const res: Array<{ title: string; name: string; snippet?: string; url?: string }> = [];
+                for (const c of cards) {
+                  const h = c.querySelector('h1, h2, h3, h4, [class*="title" i], strong');
+                  const l = c.querySelector<HTMLAnchorElement>('a[href]');
+                  const t = (h?.textContent || l?.textContent || "").replace(/\s+/g, " ").trim();
+                  if (t && t.length >= 3 && !seen.has(t)) {
+                    seen.add(t);
+                    res.push({ title: t, name: t, url: l?.href || "" });
+                  }
+                }
+                return res.length > 0 ? res : null;
+              }).catch(() => null);
+
+              if (extractedAfterRecovery) {
+                ctx.extractedData = extractedAfterRecovery;
+              }
+
+              // Re-verify task
+              taskVerification = TaskVerifier.verifyTask({
+                task,
+                plan,
+                targetUrl,
+                completedSteps: ctx.completedSteps,
+                observation: pageObservation,
+                extractedData: ctx.extractedData,
+                downloads: ctx.downloads,
+                mediaPlayback: ctx.mediaPlayback,
+              });
+              ctx.taskVerification = taskVerification;
+
+              ctx.recoveryHistory = ctx.recoveryHistory || [];
+              ctx.recoveryHistory.push({
+                stepIndex,
+                planRevision: plan.revision || 0,
+                originalAction: plan.actions[0] || {
+                  id: "step-search-recovery",
+                  type: ActionType.PRESS,
+                  risk: RiskLevel.LOW,
+                  reason: "Recover stalled search submission",
+                },
+                uniqueTargetFound: true,
+                failureCategory: "SEARCH_SUBMISSION_STALLED",
+                recoveryReason: "Re-submitted query via Enter on verified search input",
+                timestamp: new Date().toISOString(),
+                strategy: "RETRY_WITH_ALTERNATIVE_LOCATOR",
+              });
+            }
+          } catch (recErr: any) {
+            logger.warn(`Search recovery failed: ${recErr.message}`);
+          }
+        }
+      }
 
       if (!taskVerification.passed) {
         clearTimeout(timeoutTimer);
@@ -1108,7 +1261,7 @@ export class AgentLoop {
     } finally {
       clearTimeout(timeoutTimer);
       if (isTimedOut) {
-        await browserManager.closeTaskSession(ctx.taskId).catch(() => {});
+        await browserManager.closeTaskSession(ctx.taskId).catch(() => { });
       }
       // Record metrics with accurate false success detection (Part 22 & Section 12)
       const totalExecuted = ctx.completedSteps.length + ctx.failedSteps.length;
@@ -1124,6 +1277,8 @@ export class AgentLoop {
         incorrectlyExecutedActions: incorrectActions,
         retries: ctx.retries,
         replans: ctx.replans,
+        recoveryAttempted: (ctx.recoveryHistory || []).length > 0,
+        recoverySucceeded: (ctx.recoveryHistory || []).length > 0 && ctx.finalStatus === "completed",
         route: (ctx.plan?.routeDecision?.route as "api" | "browser") || "browser",
         falseSuccess: wasFalseSuccess,
       });
@@ -1191,6 +1346,7 @@ export class AgentLoop {
       details: {
         extractedData: ctx.extractedData,
         artifactsCount: ctx.downloads?.length || 0,
+        recoveryAttempts: ctx.recoveryAttempts || 0,
       },
     };
     emitState(AgentState.COMPLETED, ctx.plan?.actions.length || 0, "Completed");
@@ -1222,6 +1378,7 @@ export class AgentLoop {
       durationMs,
       details: {
         extractedData: ctx.extractedData,
+        recoveryAttempts: ctx.recoveryAttempts || 0,
       },
     };
     emitState(AgentState.COMPLETED, ctx.currentStepIndex, "Partial Success");
@@ -1252,7 +1409,10 @@ export class AgentLoop {
       completedCount: ctx.completedSteps?.length || 0,
       failedCount: ctx.failedSteps?.length || 0,
       durationMs,
-      details: errorDetails,
+      details: {
+        ...(errorDetails || {}),
+        recoveryAttempts: ctx.recoveryAttempts || 0,
+      },
     };
     emitState(AgentState.FAILED, ctx.currentStepIndex, "Failed");
     emitEvent("TASK_FAILED", reason, errorDetails);
@@ -1357,6 +1517,7 @@ export class AgentLoop {
       details: {
         isBlocked: true,
         blockType: isAuth ? "AUTH_REQUIRED" : "BOT_CHALLENGE",
+        recoveryAttempts: ctx.recoveryAttempts || 0,
         mediaPlayback: (ctx.taskVerification?.details as any)?.mediaPlayback,
       },
     };
@@ -1376,8 +1537,8 @@ export class AgentLoop {
     emitState: (s: AgentState, idx?: number, name?: string) => void
   ): Promise<ExecutionContext> {
     if (!this.markFinalized(ctx)) return ctx;
-    await browserManager.closeTaskSession(ctx.taskId).catch(() => {});
-    await browserManager.close().catch(() => {});
+    await browserManager.closeTaskSession(ctx.taskId).catch(() => { });
+    await browserManager.close().catch(() => { });
     if (ctx.browserWindow) {
       ctx.browserWindow.isOpen = false;
     }
@@ -1396,7 +1557,7 @@ export class AgentLoop {
     emitState: (s: AgentState, idx?: number, name?: string) => void
   ): ExecutionContext {
     if (!this.markFinalized(ctx)) return ctx;
-    browserManager.closeTaskSession(ctx.taskId).catch(() => {});
+    browserManager.closeTaskSession(ctx.taskId).catch(() => { });
     if (ctx.browserWindow) {
       ctx.browserWindow.isOpen = false;
     }

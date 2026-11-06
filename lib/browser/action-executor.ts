@@ -9,6 +9,7 @@ import { browserManager } from "./browser-manager";
 import { validateUrlString } from "../validation/url-policy";
 import { LocalFileResolver } from "../local/local-file-resolver";
 import { SearchResultResolver } from "./search-result-resolver";
+import { logger } from "../observability/logger";
 
 export class ActionExecutor {
   /**
@@ -232,6 +233,17 @@ export class ActionExecutor {
           const fillVal = String(action.value ?? "");
           const target = await ActionExecutor.resolveUnambiguousInteractiveTarget(locator!, action);
           await target.fill(fillVal, { timeout: fillTimeout });
+
+          // Confirm the input contains the expected text
+          const actualVal = await target.inputValue().catch(() => null);
+          if (actualVal !== null && actualVal !== fillVal) {
+            await target.clear().catch(() => {});
+            await target.pressSequentially(fillVal, { timeout: fillTimeout }).catch(() => {});
+            const secondVal = await target.inputValue().catch(() => null);
+            if (secondVal !== null && secondVal !== fillVal) {
+              logger.warn(`Input value check mismatch: expected '${fillVal}', found '${secondVal}'`);
+            }
+          }
           break;
         }
 
@@ -245,15 +257,69 @@ export class ActionExecutor {
 
         case ActionType.PRESS: {
           const key = String(action.value || "Enter");
+          const isSearchSubmission =
+            key === "Enter" &&
+            (Boolean(action.reason?.toLowerCase().includes("search")) ||
+              Boolean(action.reason?.toLowerCase().includes("submit")) ||
+              /google\.|bing\.com|duckduckgo\./i.test(page.url()));
+
           if (locator) {
             try {
-              await locator.focus().catch(() => {});
-              await locator.press(key, { timeout: action.timeout || 10000 });
+              const target = await ActionExecutor.resolveUnambiguousInteractiveTarget(locator, action);
+              await target.focus().catch(() => {});
+              await target.press(key, { timeout: action.timeout || 10000 });
             } catch {
               await page.keyboard.press(key);
             }
           } else {
             await page.keyboard.press(key);
+          }
+
+          if (isSearchSubmission) {
+            const currentU = page.url().toLowerCase();
+            const isEngineHome =
+              /^(?:https?:\/\/(?:www\.)?(?:google\.[a-z.]+|bing\.com|duckduckgo\.com)(?:\/(?:webhp)?)?(?:\?[^#]*)?)$/i.test(currentU) &&
+              !/(?:\/search|\?q=|\/s\?|\/find|\/results|&q=|\?query=)/i.test(currentU);
+
+            if (isEngineHome) {
+              await page.waitForTimeout(600);
+              const settledU = page.url().toLowerCase();
+              const stillHome =
+                /^(?:https?:\/\/(?:www\.)?(?:google\.[a-z.]+|bing\.com|duckduckgo\.com)(?:\/(?:webhp)?)?(?:\?[^#]*)?)$/i.test(settledU) &&
+                !/(?:\/search|\?q=|\/s\?|\/find|\/results|&q=|\?query=)/i.test(settledU);
+
+              if (stillHome) {
+                // If Enter was swallowed by autocomplete dropdown or input unsubmitted:
+                // 1. Try clicking visible Search submit button
+                const searchBtn = page
+                  .locator("input[name='btnK']:visible, button[name='btnK']:visible, input[value='Google Search']:visible, button[type='submit']:visible, input[type='submit']:visible")
+                  .first();
+                if ((await searchBtn.count().catch(() => 0)) > 0) {
+                  await searchBtn.click({ timeout: 2000 }).catch(() => {});
+                } else {
+                  // 2. Fall back to form submission
+                  await page.evaluate(() => {
+                    const form = document.querySelector<HTMLFormElement>("form[action*='/search'], form[role='search'], form");
+                    if (form) {
+                      if (form.requestSubmit) form.requestSubmit();
+                      else form.submit();
+                    }
+                  }).catch(() => {});
+                }
+
+                await page
+                  .waitForURL((u) => u.pathname.includes("/search") || u.search.includes("q=") || u.pathname.includes("/sorry"), { timeout: 3000 })
+                  .catch(() => {});
+              }
+            }
+
+            if (page.url().includes("/sorry") || page.url().includes("google.com/sorry")) {
+              throw new AgentError(
+                "Access restricted: Target page presented Google unusual-traffic verification (google.com/sorry/). Execution halted safely to prevent repeated blocks.",
+                ErrorCode.CAPTCHA_DETECTED,
+                false
+              );
+            }
           }
           break;
         }
@@ -401,6 +467,42 @@ export class ActionExecutor {
                 return results;
               }
             }
+
+            // Also extract general web search results (Google, Bing, Wikipedia, search fixtures)
+            const searchCards = Array.from(document.querySelectorAll(
+              '#search .g, #rso > div, div[data-sokoban-container], .MjjYud, .result-card, .search-result, .result, .mw-search-result, article, li.b_algo'
+            ));
+
+            if (searchCards.length > 0) {
+              const seenTitles = new Set<string>();
+              const results: Array<{ title: string; name: string; snippet?: string; url?: string }> = [];
+
+              for (const sc of searchCards) {
+                const heading = sc.querySelector('h1, h2, h3, h4, [class*="title" i], strong');
+                const link = sc.querySelector<HTMLAnchorElement>('a[href]');
+                const snippetEl = sc.querySelector('.snippet, .description, p, div[style*="-webkit-line-clamp"], div[data-sncf]');
+
+                const rawTitle = heading?.textContent?.trim() || link?.textContent?.trim() || "";
+                const cleanTitle = rawTitle.replace(/\s+/g, " ").trim();
+                const snippet = snippetEl?.textContent?.replace(/\s+/g, " ").trim() || "";
+                const href = link?.href || "";
+
+                if (cleanTitle && cleanTitle.length >= 3 && !seenTitles.has(cleanTitle)) {
+                  seenTitles.add(cleanTitle);
+                  results.push({
+                    title: cleanTitle,
+                    name: cleanTitle,
+                    snippet,
+                    url: href,
+                  });
+                }
+              }
+
+              if (results.length > 0) {
+                return results;
+              }
+            }
+
             return null;
           });
           break;

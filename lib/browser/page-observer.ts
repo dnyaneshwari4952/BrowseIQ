@@ -440,8 +440,22 @@ export class PageObserver {
         pageType = "consent";
       } else if (visibleCount === 0 && rawObservation.headings.length === 0) {
         pageType = "empty";
-      } else if (urlLower.includes("search") || rawObservation.headings.some((h) => /search|results|products/i.test(h))) {
-        pageType = "search_results";
+      } else {
+        // Search engine homepages (Google, Bing, DuckDuckGo, Yahoo) must NEVER be classified as search_results
+        const isSearchEngineHome = Boolean(
+          /^(?:https?:\/\/(?:www\.)?(?:google\.[a-z.]+|bing\.com|duckduckgo\.com|search\.yahoo\.com)(?:\/(?:webhp)?)?(?:\?[^#]*)?)$/i.test(urlLower) &&
+          !/(?:\/search|\?q=|\/s\?|\/find|\/results|&q=|\?query=|\/search\/)/i.test(urlLower)
+        );
+
+        if (!isSearchEngineHome) {
+          const hasSearchResultsIndicator =
+            /(?:\/search|\?q=|\/s\?|\/find|\/results|&q=|\?query=|\/test-fixtures\/search)/i.test(urlLower) ||
+            (rawObservation.headings.some((h) => /results|search results|products matching/i.test(h)) && !/^(?:google|bing|search)$/i.test(rawObservation.headings[0]?.trim() || ""));
+
+          if (hasSearchResultsIndicator) {
+            pageType = "search_results";
+          }
+        }
       }
 
       return {

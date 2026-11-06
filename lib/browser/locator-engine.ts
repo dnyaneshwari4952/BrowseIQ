@@ -167,9 +167,21 @@ export class LocatorEngine {
       target.value?.toLowerCase().includes("play") ||
       target.role === "searchbox"
     ) {
-      const searchLoc = root.locator(
-        'input[type="search"], input[data-testid*="search" i], input[role="searchbox"], input[placeholder*="play" i], input[placeholder*="search" i], input[name*="search" i], input[name="search_query"], input[name="q"], input[aria-label*="search" i], input[aria-label*="play" i], textarea[aria-label*="search" i]'
-      );
+      const searchLoc = root.locator([
+        'textarea[name="q"]',
+        'input[name="q"]:not([type="submit"]):not([type="button"])',
+        'input[type="search"]',
+        'input[role="searchbox"]',
+        'textarea[role="searchbox"]',
+        'input:not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="image"]):not([type="hidden"])[data-testid*="search" i]',
+        'input:not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="image"]):not([type="hidden"])[placeholder*="play" i]',
+        'input:not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="image"]):not([type="hidden"])[placeholder*="search" i]',
+        'input:not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="image"]):not([type="hidden"])[name*="search" i]',
+        'input[name="search_query"]',
+        'input:not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="image"]):not([type="hidden"])[aria-label*="search" i]',
+        'input:not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="image"]):not([type="hidden"])[aria-label*="play" i]',
+        'textarea[aria-label*="search" i]',
+      ].join(", "));
       await evaluateCandidate(LocatorStrategy.CSS, 'input[search]', searchLoc, 78);
     }
 

@@ -152,24 +152,44 @@ export class DynamicTaskPlanner {
             retries: { maxRetries: 2, backoffMs: 400 },
           });
 
-          // Submit search either by clicking search button (default) or pressing Enter
-          actions.push({
-            id: `step-${actions.length + 1}-click-search`,
-            type: ActionType.CLICK,
-            target: searchBtnTarget || {
-              strategy: "css",
-              value: "button[type='submit'], input[type='submit'], button:has-text('Search'), button:has-text('Find')",
-            },
-            risk: RiskLevel.LOW,
-            reason: "Click search button to submit search",
-            retries: { maxRetries: 2, backoffMs: 400 },
-          });
+          // Submit search: On Google, pressing Enter on the search input avoids autocomplete dropdown interception.
+          // On general websites/fixtures, click the dedicated search button (or submit element).
+          const isGoogle =
+            /google\./i.test(targetUrl || spec.targetUrl || "") ||
+            /\bgoogle\b/i.test(spec.originalInstruction || "");
+
+          if (isGoogle) {
+            actions.push({
+              id: `step-${actions.length + 1}-press-enter`,
+              type: ActionType.PRESS,
+              target: searchInputTarget,
+              value: "Enter",
+              risk: RiskLevel.LOW,
+              reason: `Press Enter to submit search query '${query}' on Google`,
+              retries: { maxRetries: 2, backoffMs: 400 },
+            });
+          } else {
+            actions.push({
+              id: `step-${actions.length + 1}-click-search`,
+              type: ActionType.CLICK,
+              target: searchBtnTarget || {
+                strategy: "css",
+                value: "button[type='submit'], input[type='submit'], button:has-text('Search'), button:has-text('Find')",
+              },
+              risk: RiskLevel.LOW,
+              reason: "Click search button to submit search",
+              retries: { maxRetries: 2, backoffMs: 400 },
+            });
+          }
 
           // Wait for results
           actions.push({
             id: `step-${actions.length + 1}-wait-results`,
             type: ActionType.WAIT,
             value: 2000,
+            expectedState: {
+              elementAppears: "#search, #rso, .g, [data-sokoban-container], [role='feed'], [role='article'], .result-card, .search-results, [data-testid*='result'], .s-result-item, ytd-video-renderer",
+            },
             risk: RiskLevel.LOW,
             reason: "Wait for search results to load",
           });
@@ -252,8 +272,15 @@ export class DynamicTaskPlanner {
             risk: RiskLevel.LOW,
             reason: "Extract product cards from page for semantic evaluation and price comparison",
           });
+        } else if (query && !shouldOpenResult) {
+          // Extract general search result cards so real matching results are captured for verification and reporting
+          actions.push({
+            id: `step-${actions.length + 1}-extract-results`,
+            type: ActionType.EVALUATE_SAFE,
+            risk: RiskLevel.LOW,
+            reason: `Extract search results matching query '${query}'`,
+          });
         }
-        // General search concludes here without forcing artificial product extraction
         break;
       }
 
@@ -839,10 +866,20 @@ export class DynamicTaskPlanner {
   // Locator resolution helpers grounded in observation
   private static resolveSearchInputLocator(obs?: PageObservation | null) {
     if (obs?.interactiveElements) {
-      // 1. Look specifically for an INPUT or TEXTAREA element representing search
+      // 1. Look specifically for an INPUT or TEXTAREA element representing search (excluding submit/button/reset/image/hidden)
+      const isTextInput = (el: any) =>
+        (el.tagName === "TEXTAREA" || el.tagName === "INPUT") &&
+        el.type !== "submit" &&
+        el.type !== "button" &&
+        el.type !== "reset" &&
+        el.type !== "image" &&
+        el.type !== "hidden" &&
+        el.type !== "checkbox" &&
+        el.type !== "radio";
+
       const inputMatch = obs.interactiveElements.find(
         (el) =>
-          (el.tagName === "INPUT" || el.tagName === "TEXTAREA") &&
+          isTextInput(el) &&
           (el.name?.toLowerCase() === "q" ||
             el.name?.toLowerCase() === "search_query" ||
             el.name?.toLowerCase().includes("search") ||
@@ -859,14 +896,15 @@ export class DynamicTaskPlanner {
 
       const match = inputMatch || obs.interactiveElements.find(
         (el) =>
-          el.type === "search" ||
-          el.role === "searchbox" ||
-          el.name?.toLowerCase() === "q" ||
-          el.name?.toLowerCase() === "search_query" ||
-          el.placeholder?.toLowerCase().includes("search") ||
-          el.placeholder?.toLowerCase().includes("play") ||
-          el.ariaLabel?.toLowerCase().includes("search") ||
-          (el.id && !el.id.startsWith("elem-") && el.id.toLowerCase().includes("search"))
+          isTextInput(el) &&
+          (el.type === "search" ||
+            el.role === "searchbox" ||
+            el.name?.toLowerCase() === "q" ||
+            el.name?.toLowerCase() === "search_query" ||
+            el.placeholder?.toLowerCase().includes("search") ||
+            el.placeholder?.toLowerCase().includes("play") ||
+            el.ariaLabel?.toLowerCase().includes("search") ||
+            (el.id && !el.id.startsWith("elem-") && el.id.toLowerCase().includes("search")))
       );
 
       if (match) {
@@ -879,7 +917,20 @@ export class DynamicTaskPlanner {
     }
     return {
       strategy: "css" as const,
-      value: "input[name='q'], input[title*='search' i], input[placeholder*='search' i], input[type='search'], input[data-testid*='search' i], input[role='searchbox'], input[name='search_query'], input[aria-label*='search' i], textarea[aria-label*='search' i], input[id*='search' i]",
+      value: [
+        "textarea[name='q']",
+        "input[name='q']:not([type='submit']):not([type='button']):not([type='reset']):not([type='image']):not([type='hidden'])",
+        "input[name='search_query']",
+        "input[type='search']",
+        "input[role='searchbox']",
+        "textarea[role='searchbox']",
+        "textarea[aria-label*='search' i]",
+        "input:not([type='submit']):not([type='button']):not([type='reset']):not([type='image']):not([type='hidden'])[aria-label*='search' i]",
+        "input:not([type='submit']):not([type='button']):not([type='reset']):not([type='image']):not([type='hidden'])[placeholder*='search' i]",
+        "input:not([type='submit']):not([type='button']):not([type='reset']):not([type='image']):not([type='hidden'])[title*='search' i]",
+        "input:not([type='submit']):not([type='button']):not([type='reset']):not([type='image']):not([type='hidden'])[data-testid*='search' i]",
+        "input:not([type='submit']):not([type='button']):not([type='reset']):not([type='image']):not([type='hidden'])[id*='search' i]",
+      ].join(", "),
     };
   }
 
